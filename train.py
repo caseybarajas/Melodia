@@ -8,23 +8,32 @@ from keras.callbacks import ModelCheckpoint
 from keras.utils import to_categorical
 
 # Parse MIDI files and extract notes
-notes = []
-for file in os.listdir('examples'):
-    midi = converter.parse(os.path.join('examples', file))
-    notes_to_parse = None
-    try:
+bass_notes = []
+treble_notes = []
+for file in os.listdir('examples/'):
+    if file.endswith(".mid") or file.endswith(".midi"):
+        midi = converter.parse(os.path.join('examples/', file))
         parts = instrument.partitionByInstrument(midi)
-        notes_to_parse = parts.parts[0].recurse()
-    except:
-        notes_to_parse = midi.flat.notes
-    for element in notes_to_parse:
-        if isinstance(element, note.Note):
-            notes.append(str(element.pitch))
-        elif isinstance(element, chord.Chord):
-            notes.append('.'.join(str(n) for n in element.normalOrder))
+        if parts:  # file has instrument parts
+            for part in parts.parts:
+                if "Piano" in str(part):  # select piano parts
+                    for event in part.recurse():
+                        if isinstance(event, note.Note):
+                            if event.pitch.octave < 4:
+                                bass_notes.append(str(event.pitch))
+                            else:
+                                treble_notes.append(str(event.pitch))
+                        elif isinstance(event, chord.Chord):
+                            if event.root().octave < 4:
+                                bass_notes.append('.'.join(str(n) for n in event.normalOrder))
+                            else:
+                                treble_notes.append('.'.join(str(n) for n in event.normalOrder))
 
-# Create a dictionary to map notes to integers
-unique_notes = sorted(set(note for note in notes))
+# Concatenate bass_notes and treble_notes
+all_notes = bass_notes + treble_notes
+
+# Create a dictionary to map all_notes to integers
+unique_notes = sorted(set(note for note in all_notes))
 note_to_int = dict((note, number) for number, note in enumerate(unique_notes))
 
 # Save the note_to_int dictionary as a pickle file
@@ -35,9 +44,9 @@ with open('note_to_int.pkl', 'wb') as f:
 sequence_length = 100
 network_input = []
 network_output = []
-for i in range(0, len(notes) - sequence_length, 1):
-    sequence_in = notes[i:i + sequence_length]
-    sequence_out = notes[i + sequence_length]
+for i in range(0, len(all_notes) - sequence_length, 1):
+    sequence_in = all_notes[i:i + sequence_length]
+    sequence_out = all_notes[i + sequence_length]
     network_input.append([note_to_int[char] for char in sequence_in])
     network_output.append(note_to_int[sequence_out])
 
@@ -72,9 +81,9 @@ model.add(Dense(n_vocab, activation='softmax'))
 model.compile(loss='categorical_crossentropy', optimizer='adam')
 
 # Define the checkpoint
-filepath = "weights-improvement-{epoch:02d}-{loss:.4f}-bigger.keras"
+filepath = "models/Melodia-{epoch:02d}-{loss:.4f}.keras"
 checkpoint = ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only=True, mode='min')
 callbacks_list = [checkpoint]
 
 # Fit the model
-model.fit(network_input, network_output, epochs=200, batch_size=64, callbacks=callbacks_list)
+model.fit(network_input, network_output, epochs=20, batch_size=64, callbacks=callbacks_list)

@@ -30,7 +30,7 @@ model.add(LSTM(256))
 model.add(Dropout(0.2))
 model.add(Dense(n_vocab, activation='softmax'))
 
-model.load_weights('#path_to_model_weights.keras#')
+model.load_weights('models/modelyoutrainupto.keras')
 
 # Generate a sequence of notes
 start = np.random.randint(0, len(network_input)-1)

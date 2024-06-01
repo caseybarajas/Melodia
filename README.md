@@ -4,6 +4,11 @@
 
 Melodia is a Python-based tool for generating musical compositions using algorithmic techniques. It uses machine learning and deep learning techniques to create unique and creative musical pieces. Explore the creative possibilities of code and music!
 
+## CURRENTLY WORKING ON:
+
+- Multi-track generation and multi hand piano support
+- Better training data
+
 ## Features
 
 - Generate unique musical compositions using your own MIDI files.
@@ -13,7 +18,7 @@ Melodia is a Python-based tool for generating musical compositions using algorit
 
 ## Installation
 
-1. Clone this repository: `git clone https://github.com/Laughable33/melodia.git`
+1. Clone this repository: `git clone https://github.com/TheKC33/melodia.git`
 2. Navigate to the cloned repository: `cd melodia`
 3. Install dependencies: `pip install -r requirements.txt`
 
@@ -21,8 +26,9 @@ Melodia is a Python-based tool for generating musical compositions using algorit
 
 1. Prepare your example MIDI files and place them in the `examples` directory.
 2. Run the training script: `python train.py`
-3. After training, run the play script to generate a new composition: `python play.py`
-4. The generated composition will be saved as a MIDI file.
+3. After training, go into the play.py and change the model name to the model you just trained.
+4. Run the play script to generate a new composition: `python play.py`
+5. The generated composition will be saved as a MIDI file.
 
 ## License
 
