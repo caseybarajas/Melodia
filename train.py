@@ -10,9 +10,9 @@ from keras.utils import to_categorical
 # Parse MIDI files and extract notes
 bass_notes = []
 treble_notes = []
-for file in os.listdir('data/'):
+for file in os.listdir('Z:\Casey\Projects\Melodia\data'):
     if file.endswith(".mid") or file.endswith(".midi"):
-        midi = converter.parse(os.path.join('data/', file))
+        midi = converter.parse(os.path.join('Z:\Casey\Projects\Melodia\data', file))
         parts = instrument.partitionByInstrument(midi)
         if parts:  # file has instrument parts
             for part in parts.parts:
@@ -86,4 +86,4 @@ checkpoint = ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only
 callbacks_list = [checkpoint]
 
 # Fit the model
-model.fit(network_input, network_output, epochs=20, batch_size=64, callbacks=callbacks_list)
+model.fit(network_input, network_output, epochs=200, batch_size=64, callbacks=callbacks_list)

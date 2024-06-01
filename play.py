@@ -31,7 +31,7 @@ model.add(LSTM(256))
 model.add(Dropout(0.2))
 model.add(Dense(n_vocab, activation='softmax'))
 
-model.load_weights('models/weights-improvement-480-0.0191-bigger.keras')
+model.load_weights('models/Melodia-59-1.9567.keras')
 
 # Generate a sequence of notes
 start = np.random.randint(0, len(network_input)-1)
@@ -55,6 +55,10 @@ for note_index in range(500):
 offset = 0
 output_notes = []
 
+# Create two separate streams for the bass and treble parts
+bass_stream = stream.Part()
+treble_stream = stream.Part()
+
 for pattern in prediction_output:
     # pattern is a chord
     if ('.' in pattern) or pattern.isdigit():
@@ -66,18 +70,34 @@ for pattern in prediction_output:
             notes.append(new_note)
         new_chord = chord.Chord(notes)
         new_chord.offset = offset
-        output_notes.append(new_chord)
+
+        # Add the note to the bass or treble stream based on its pitch
+        if new_note.pitch.midi < 60:
+            bass_stream.append(new_note)
+        else:
+            treble_stream.append(new_note)
+
     # pattern is a note
     else:
         new_note = note.Note(pattern)
         new_note.offset = offset
         new_note.storedInstrument = instrument.Piano()
-        output_notes.append(new_note)
 
+        # Add the note to the bass or treble stream based on its pitch
+        if new_note.pitch.midi < 60:
+            bass_stream.append(new_note)
+        else:
+            treble_stream.append(new_note)
+        
     # Increase offset each iteration so that notes do not stack
     offset += 0.5
 
-midi_stream = stream.Stream(output_notes)
+# Combine the bass and treble streams into a single stream
+midi_stream = stream.Stream([bass_stream, treble_stream])
+
+current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+output_file = f"tests/test_output_{current_time}.mid"
+midi_stream.write('midi', fp=output_file)
 
 current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 output_file = f"tests/test_output_{current_time}.mid"
