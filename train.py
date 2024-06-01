@@ -15,7 +15,8 @@ warnings.filterwarnings("ignore", category=UserWarning)
 bass_notes = []
 treble_notes = []
 midi_files = []
-for file in os.listdir('data'):
+total_files = len(os.listdir('data'))
+for i, file in enumerate(os.listdir('data')):
     if file.endswith(".mid") or file.endswith(".midi"):
         midi_files.append(file)
         midi = converter.parse(os.path.join('data', file))
@@ -34,6 +35,7 @@ for file in os.listdir('data'):
                                 bass_notes.append('.'.join(str(n) for n in event.normalOrder))
                             else:
                                 treble_notes.append('.'.join(str(n) for n in event.normalOrder))
+        print("Finished parsing file", i+1, "out of", total_files, "files:", file)
 
 print("MIDI files parsed:")
 for file in midi_files:
