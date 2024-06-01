@@ -6,6 +6,7 @@ from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM
 from keras.callbacks import ModelCheckpoint
 from keras.utils import to_categorical
+import datetime
 
 # Load the note-to-integer mapping
 with open('note_to_int.pkl', 'rb') as f:
@@ -30,7 +31,7 @@ model.add(LSTM(256))
 model.add(Dropout(0.2))
 model.add(Dense(n_vocab, activation='softmax'))
 
-model.load_weights('models/modelyoutrainupto.keras')
+model.load_weights('models/weights-improvement-480-0.0191-bigger.keras')
 
 # Generate a sequence of notes
 start = np.random.randint(0, len(network_input)-1)
@@ -78,4 +79,6 @@ for pattern in prediction_output:
 
 midi_stream = stream.Stream(output_notes)
 
-midi_stream.write('midi', fp='test_output.mid')
+current_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+output_file = f"tests/test_output_{current_time}.mid"
+midi_stream.write('midi', fp=output_file)

@@ -10,9 +10,9 @@ from keras.utils import to_categorical
 # Parse MIDI files and extract notes
 bass_notes = []
 treble_notes = []
-for file in os.listdir('examples/'):
+for file in os.listdir('data/'):
     if file.endswith(".mid") or file.endswith(".midi"):
-        midi = converter.parse(os.path.join('examples/', file))
+        midi = converter.parse(os.path.join('data/', file))
         parts = instrument.partitionByInstrument(midi)
         if parts:  # file has instrument parts
             for part in parts.parts:
