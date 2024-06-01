@@ -10,9 +10,11 @@ from keras.utils import to_categorical
 # Parse MIDI files and extract notes
 bass_notes = []
 treble_notes = []
-for file in os.listdir('Z:\Casey\Projects\Melodia\data'):
+midi_files = []
+for file in os.listdir('data'):
     if file.endswith(".mid") or file.endswith(".midi"):
-        midi = converter.parse(os.path.join('Z:\Casey\Projects\Melodia\data', file))
+        midi_files.append(file)
+        midi = converter.parse(os.path.join('data', file))
         parts = instrument.partitionByInstrument(midi)
         if parts:  # file has instrument parts
             for part in parts.parts:
@@ -28,6 +30,10 @@ for file in os.listdir('Z:\Casey\Projects\Melodia\data'):
                                 bass_notes.append('.'.join(str(n) for n in event.normalOrder))
                             else:
                                 treble_notes.append('.'.join(str(n) for n in event.normalOrder))
+
+print("MIDI files parsed:")
+for file in midi_files:
+    print(file)
 
 # Concatenate bass_notes and treble_notes
 all_notes = bass_notes + treble_notes

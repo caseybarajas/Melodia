@@ -7,7 +7,6 @@ Melodia is a Python-based tool for generating musical compositions using algorit
 ## CURRENTLY WORKING ON:
 
 - Multi-track generation and multi hand piano support
-- Better training data
 
 ## Features
 
