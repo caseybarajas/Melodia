@@ -1,12 +1,12 @@
 import os
 import pickle
 import numpy as np
+import datetime
 from music21 import converter, instrument, note, chord, stream
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM
 from keras.callbacks import ModelCheckpoint
 from keras.utils import to_categorical
-import datetime
 
 # Load the note-to-integer mapping
 with open('note_to_int.pkl', 'rb') as f:

@@ -1,11 +1,15 @@
 import os
 import pickle
 import numpy as np
+import warnings
 from music21 import converter, instrument, note, chord, stream
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM
 from keras.callbacks import ModelCheckpoint
 from keras.utils import to_categorical
+
+# Suppress the copyright warning thingie
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Parse MIDI files and extract notes
 bass_notes = []
