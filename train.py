@@ -3,6 +3,7 @@ import pickle
 import numpy as np
 import warnings
 from music21 import converter, instrument, note, chord, stream
+from tensorflow import keras
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM
 from keras.callbacks import ModelCheckpoint
