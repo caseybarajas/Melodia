@@ -98,4 +98,4 @@ checkpoint = ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only
 callbacks_list = [checkpoint]
 
 # Fit the model
-model.fit(network_input, network_output, epochs=200, batch_size=64, callbacks=callbacks_list)
+model.fit(network_input, network_output, epochs=20, batch_size=64, callbacks=callbacks_list)

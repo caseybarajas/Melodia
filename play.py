@@ -31,7 +31,7 @@ model.add(LSTM(256))
 model.add(Dropout(0.2))
 model.add(Dense(n_vocab, activation='softmax'))
 
-model.load_weights('models/#')
+model.load_weights('models/Melodia-109-1.6571.keras')
 
 # Generate a sequence of notes
 start = np.random.randint(0, len(network_input)-1)
