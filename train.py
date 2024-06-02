@@ -90,7 +90,8 @@ model.add(LSTM(256))
 model.add(Dropout(0.2))
 model.add(Dense(n_vocab, activation='softmax'))
 
-model.compile(loss='categorical_crossentropy', optimizer='adam')
+optimizer = keras.optimizers.Adam(clipvalue=0.5)
+model.compile(loss='categorical_crossentropy', optimizer=optimizer)
 
 # Define the checkpoint
 filepath = "models/Melodia-{epoch:02d}-{loss:.4f}.keras"
@@ -98,4 +99,4 @@ checkpoint = ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only
 callbacks_list = [checkpoint]
 
 # Fit the model
-model.fit(network_input, network_output, epochs=200, batch_size=64, callbacks=callbacks_list)
+model.fit(network_input, network_output, epochs=50, batch_size=128, callbacks=callbacks_list)
