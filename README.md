@@ -32,3 +32,14 @@ Melodia is a Python-based tool for generating musical compositions using algorit
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## Acknowledgements
+
+The data used to train this model is built upon the MAESTRO dataset, which was introduced in the following paper:
+
+Curtis Hawthorne, Andriy Stasyuk, Adam Roberts, Ian Simon, Cheng-Zhi Anna Huang,
+Sander Dieleman, Erich Elsen, Jesse Engel, and Douglas Eck. "Enabling
+Factorized Piano Music Modeling and Generation with the MAESTRO Dataset."
+In International Conference on Learning Representations, 2019.
+
+The MAESTRO dataset can be found at: https://magenta.tensorflow.org/datasets/maestro

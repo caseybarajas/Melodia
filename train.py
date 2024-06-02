@@ -11,6 +11,22 @@ from keras.utils import to_categorical
 # Suppress the copyright warning thingie
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# Define a generator for data loading
+def data_generator(batch_size):
+    while True:
+        for i in range(0, len(all_notes) - sequence_length, batch_size):
+            network_input = []
+            network_output = []
+            for j in range(i, min(i + batch_size, len(all_notes) - sequence_length)):
+                sequence_in = all_notes[j:j + sequence_length]
+                sequence_out = all_notes[j + sequence_length]
+                network_input.append([note_to_int[char] for char in sequence_in])
+                network_output.append(note_to_int[sequence_out])
+            network_input = np.reshape(network_input, (len(network_input), sequence_length, 1))
+            network_input = network_input / float(n_vocab)
+            network_output = to_categorical(network_output)
+            yield network_input, network_output
+
 # Parse MIDI files and extract notes
 bass_notes = []
 treble_notes = []
@@ -97,5 +113,13 @@ filepath = "models/Melodia-{epoch:02d}-{loss:.4f}.keras"
 checkpoint = ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only=True, mode='min')
 callbacks_list = [checkpoint]
 
-# Fit the model
-model.fit(network_input, network_output, epochs=50, batch_size=64, callbacks=callbacks_list)
+# Use a more efficient optimizer
+model.compile(loss='categorical_crossentropy', optimizer='Nadam')
+
+# Use early stopping
+from keras.callbacks import EarlyStopping
+early_stopping = EarlyStopping(monitor='val_loss', patience=3)
+callbacks_list.append(early_stopping)
+
+# Fit the model using the generator
+model.fit(data_generator(batch_size=64), epochs=50, steps_per_epoch=len(all_notes) // 64, callbacks=callbacks_list)
