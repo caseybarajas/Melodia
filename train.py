@@ -10,7 +10,7 @@ from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 
-# Suppress the copyright warning
+# Suppress the warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 def parse_midi_files(data_dir):
