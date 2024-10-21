@@ -35,7 +35,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Acknowledgements
 
-The data used to train this model is built upon the MAESTRO dataset, which was introduced in the following paper:
+The data used to train this model is partly built upon the MAESTRO dataset, which was introduced in the following paper:
 
 Curtis Hawthorne, Andriy Stasyuk, Adam Roberts, Ian Simon, Cheng-Zhi Anna Huang,
 Sander Dieleman, Erich Elsen, Jesse Engel, and Douglas Eck. "Enabling
