@@ -1,4 +1,4 @@
-# 🎵 Melodia: Algorithmic Music Composition in Python 🎶
+# 🎵 Melodia: Algorithmic Music Composition 🎶
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.6%2B-blue.svg)](https://www.python.org/downloads/)
