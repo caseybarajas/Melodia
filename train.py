@@ -1,15 +1,18 @@
 import os
 import pickle
 import numpy as np
-from music21 import converter, instrument, note, chord
+from music21 import converter, instrument, note, chord, articulations
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, LSTM
+from keras.layers import Dense, Dropout, LSTM, Input, Concatenate
 from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from keras.utils import to_categorical
 import tensorflow as tf
 
 def parse_midi_files(data_dir):
     notes = []
+    durations = []
+    instruments = []
+    articulations_list = []
     for file in os.listdir(data_dir):
         if file.endswith(".mid"):
             midi = converter.parse(os.path.join(data_dir, file))
@@ -22,25 +25,66 @@ def parse_midi_files(data_dir):
             for element in notes_to_parse:
                 if isinstance(element, note.Note):
                     notes.append(str(element.pitch))
+                    durations.append(element.quarterLength)
+                    instruments.append(str(element.getInstrument()))
+                    articulations_list.append([str(articulation) for articulation in element.articulations])
                 elif isinstance(element, chord.Chord):
                     notes.append('.'.join(str(n) for n in element.normalOrder))
-    return notes
+                    durations.append(element.quarterLength)
+                    instruments.append(str(element.getInstrument()))
+                    articulations_list.append([str(articulation) for articulation in element.articulations])
+    return notes, durations, instruments, articulations_list
 
-def prepare_sequences(notes, n_vocab):
+def prepare_sequences(notes, durations, instruments, articulations_list, n_vocab):
     sequence_length = 100
     note_to_int = dict((note, number) for number, note in enumerate(sorted(set(notes))))
+    duration_to_int = dict((duration, number) for number, duration in enumerate(sorted(set(durations))))
+    instrument_to_int = dict((instrument, number) for number, instrument in enumerate(sorted(set(instruments))))
+    
+    # Flatten articulations and handle empty lists
+    flat_articulations = []
+    for arts in articulations_list:
+        if arts:  # If the list is not empty
+            flat_articulations.extend(arts)
+        else:
+            flat_articulations.append("none")  # Add placeholder for empty articulations
+    
+    articulation_to_int = dict((articulation, number) for number, articulation in enumerate(sorted(set(flat_articulations))))
+    
     network_input = []
     network_output = []
+    
     for i in range(0, len(notes) - sequence_length):
-        sequence_in = notes[i:i + sequence_length]
-        sequence_out = notes[i + sequence_length]
-        network_input.append([note_to_int[char] for char in sequence_in])
-        network_output.append(note_to_int[sequence_out])
-    n_patterns = len(network_input)
-    network_input = np.reshape(network_input, (n_patterns, sequence_length, 1))
+        sequence_in_notes = [note_to_int[char] for char in notes[i:i + sequence_length]]
+        sequence_in_durations = [duration_to_int[char] for char in durations[i:i + sequence_length]]
+        sequence_in_instruments = [instrument_to_int[char] for char in instruments[i:i + sequence_length]]
+        
+        # Handle articulations - take first articulation or "none" if empty
+        sequence_in_articulations = []
+        for arts in articulations_list[i:i + sequence_length]:
+            if arts:
+                sequence_in_articulations.append(articulation_to_int[arts[0]])
+            else:
+                sequence_in_articulations.append(articulation_to_int["none"])
+        
+        sequence_out = note_to_int[notes[i + sequence_length]]
+        
+        # Stack features horizontally
+        sequence_in = np.column_stack((
+            sequence_in_notes,
+            sequence_in_durations,
+            sequence_in_instruments,
+            sequence_in_articulations
+        ))
+        
+        network_input.append(sequence_in)
+        network_output.append(sequence_out)
+    
+    network_input = np.array(network_input)
     network_input = network_input / float(n_vocab)
     network_output = to_categorical(network_output)
-    return network_input, network_output, note_to_int
+    
+    return network_input, network_output, note_to_int, duration_to_int, instrument_to_int, articulation_to_int
 
 def create_model(network_input, n_vocab):
     model = Sequential()
@@ -58,14 +102,17 @@ def main():
     if physical_devices:
         tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
-    notes = parse_midi_files('data')
+    notes, durations, instruments, articulations_list = parse_midi_files('data')
     n_vocab = len(set(notes))
-    network_input, network_output, note_to_int = prepare_sequences(notes, n_vocab)
+    network_input, network_output, note_to_int, duration_to_int, instrument_to_int, articulation_to_int = prepare_sequences(notes, durations, instruments, articulations_list, n_vocab)
     
     # Save preprocessed data
     with open('preprocessed_data.pkl', 'wb') as f:
         pickle.dump({
             'note_to_int': note_to_int,
+            'duration_to_int': duration_to_int,
+            'instrument_to_int': instrument_to_int,
+            'articulation_to_int': articulation_to_int,
             'network_input': network_input,
             'n_vocab': n_vocab
         }, f)
