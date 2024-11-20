@@ -3,19 +3,19 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.6%2B-blue.svg)](https://www.python.org/downloads/)
 
-Melodia is a Python-based tool for generating musical compositions using algorithmic techniques. It leverages machine learning and deep learning to create unique and creative musical pieces. Dive into the fusion of code and music! 🎹
-
-## 🚀 CURRENTLY WORKING ON:
-
-- Enhancing machine learning algorithms for better performance
-- Developing a user-friendly GUI
+Melodia is a Python-based tool for generating musical compositions using algorithmic techniques. It leverages machine learning and deep learning to create unique and creative musical pieces with control over notes, durations, instruments, and articulations. 🎹
 
 ## ✨ Features
 
-- 🎼 Generate unique musical compositions using your own MIDI files.
-- 🤖 Utilizes LSTM (Long Short-Term Memory) networks to learn and generate musical patterns.
-- 💾 Save and load trained models for future use.
-- 🎶 Export generated compositions as MIDI files.
+- 🎼 Generate unique musical compositions using your own MIDI files
+- 🤖 LSTM networks for learning complex musical patterns
+- 🎵 Control over musical elements:
+  - Notes and chords
+  - Duration patterns
+  - Instrument selection
+  - Articulation styles
+- 🎛️ Adjustable generation parameters
+- 💾 Save and load trained models
 
 ## 📦 Installation
 
@@ -34,17 +34,25 @@ Melodia is a Python-based tool for generating musical compositions using algorit
 
 ## 🛠️ Usage
 
-1. Prepare your example MIDI files and place them in the `examples` directory.
-2. Run the training script:
+1. Place your MIDI training files in the `data` directory.
+
+2. Train the model:
     ```sh
     python train.py
     ```
-3. Update the model name in `play.py` to the model you just trained.
-4. Generate a new composition:
+
+3. Generate music with custom parameters:
     ```sh
-    python play.py
+    python play.py --length 500 --temperature 1.0 --output output.mid
     ```
-5. The generated composition will be saved as a MIDI file.
+
+### Generation Parameters
+
+- `--length`: Number of notes to generate (default: 500)
+- `--temperature`: Controls randomness (0.1-2.0, default: 1.0)
+  - Lower values = more conservative/predictable
+  - Higher values = more experimental/random
+- `--output`: Output MIDI filename (default: output.mid)
 
 ## 👥 Contributors
 
