@@ -21,7 +21,7 @@ Melodia is a Python-based tool for generating musical compositions using algorit
 
 1. Clone this repository:
     ```sh
-    git clone https://github.com/caseybarajas33/melodia.git
+    git clone https://github.com/caseybarajas/melodia.git
     ```
 2. Navigate to the cloned repository:
     ```sh
