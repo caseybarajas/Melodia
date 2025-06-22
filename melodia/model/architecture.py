@@ -1,51 +1,39 @@
 # melodia/model/architecture.py
 
-import tensorflow as tf
-from tensorflow.keras import layers, Model
-from typing import Optional, Tuple
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
+from typing import Optional, Tuple
 from ..config import ModelConfig
 
-class MultiHeadAttention(layers.Layer):
-    """Custom multi-head attention with relative position encoding"""
+class MultiHeadAttention(nn.Module):
+    """PyTorch implementation of multi-head attention with relative position encoding"""
     
-    def __init__(self, config: ModelConfig, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: ModelConfig):
+        super().__init__()
         self.num_heads = config.num_heads
         self.key_dim = config.embedding_dim // config.num_heads
+        self.embedding_dim = config.embedding_dim
         
-        self.query_dense = layers.Dense(config.embedding_dim)
-        self.key_dense = layers.Dense(config.embedding_dim)
-        self.value_dense = layers.Dense(config.embedding_dim)
-        self.combine_heads = layers.Dense(config.embedding_dim)
+        self.query_dense = nn.Linear(config.embedding_dim, config.embedding_dim)
+        self.key_dense = nn.Linear(config.embedding_dim, config.embedding_dim)
+        self.value_dense = nn.Linear(config.embedding_dim, config.embedding_dim)
+        self.combine_heads = nn.Linear(config.embedding_dim, config.embedding_dim)
         
-        # Relative position embeddings
-        self.rel_pos_embedding = self.add_weight(
-            name="rel_pos_embedding",
-            shape=(2 * config.max_sequence_length - 1, self.key_dim),
-            initializer="random_normal",
-            trainable=True
-        )
+        # Relative position embeddings - disabled for now for stability
+        # self.rel_pos_embedding = nn.Parameter(
+        #     torch.randn(2 * config.max_sequence_length - 1, self.key_dim)
+        # )
         
-    def _rel_shift(self, x: tf.Tensor) -> tf.Tensor:
-        """Compute relative positional attention"""
-        batch_size, num_heads, seq_len, _ = tf.shape(x)
-        x = tf.reshape(x, [batch_size, num_heads, seq_len, seq_len])
-        x = tf.pad(x, [[0, 0], [0, 0], [0, 0], [1, 0]])
-        x = tf.reshape(x, [batch_size, num_heads, seq_len + 1, seq_len])
-        x = tf.slice(x, [0, 0, 1, 0], [-1, -1, -1, -1])
-        x = tf.reshape(x, [batch_size, num_heads, seq_len, seq_len])
-        return x
-    
-    def call(
+    def forward(
         self,
-        query: tf.Tensor,
-        key: tf.Tensor,
-        value: tf.Tensor,
-        mask: Optional[tf.Tensor] = None
-    ) -> tf.Tensor:
-        batch_size = tf.shape(query)[0]
-        seq_len = tf.shape(query)[1]
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        batch_size, seq_len, _ = query.shape
         
         # Linear transformations
         query = self.query_dense(query)
@@ -53,142 +41,262 @@ class MultiHeadAttention(layers.Layer):
         value = self.value_dense(value)
         
         # Split heads
-        query = tf.reshape(
-            query,
-            (batch_size, -1, self.num_heads, self.key_dim)
-        )
-        key = tf.reshape(
-            key,
-            (batch_size, -1, self.num_heads, self.key_dim)
-        )
-        value = tf.reshape(
-            value,
-            (batch_size, -1, self.num_heads, self.key_dim)
-        )
+        query = query.view(batch_size, seq_len, self.num_heads, self.key_dim)
+        key = key.view(batch_size, seq_len, self.num_heads, self.key_dim)
+        value = value.view(batch_size, seq_len, self.num_heads, self.key_dim)
         
-        # Transpose for attention
-        query = tf.transpose(query, [0, 2, 1, 3])
-        key = tf.transpose(key, [0, 2, 1, 3])
-        value = tf.transpose(value, [0, 2, 1, 3])
+        # Transpose for attention (batch_size, num_heads, seq_len, key_dim)
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
         
         # Scaled dot-product attention
-        scale = tf.math.sqrt(tf.cast(self.key_dim, tf.float32))
-        attention = tf.matmul(query, key, transpose_b=True) / scale
+        scale = torch.sqrt(torch.tensor(self.key_dim, dtype=torch.float32, device=query.device))
+        attention = torch.matmul(query, key.transpose(-2, -1)) / scale
         
-        # Add relative position bias
-        position_ids = tf.range(seq_len)[:, None] - tf.range(seq_len)[None, :]
-        position_ids = position_ids + seq_len - 1
-        rel_pos_bias = tf.gather(self.rel_pos_embedding, position_ids)
-        rel_pos_bias = self._rel_shift(rel_pos_bias)
-        attention = attention + rel_pos_bias
-        
+        # Apply mask if provided
         if mask is not None:
-            attention += (mask * -1e9)
+            attention = attention.masked_fill(mask == 0, -1e9)
         
-        attention = tf.nn.softmax(attention, axis=-1)
+        attention = F.softmax(attention, dim=-1)
         
         # Apply attention to values
-        output = tf.matmul(attention, value)
+        output = torch.matmul(attention, value)
         
         # Combine heads
-        output = tf.transpose(output, [0, 2, 1, 3])
-        output = tf.reshape(output, (batch_size, -1, self.num_heads * self.key_dim))
+        output = output.transpose(1, 2).contiguous()
+        output = output.view(batch_size, seq_len, self.embedding_dim)
         output = self.combine_heads(output)
         
         return output
 
-class TransformerBlock(layers.Layer):
-    """Transformer block with relative position encoding"""
+class TransformerBlock(nn.Module):
+    """PyTorch transformer block with layer normalization and dropout"""
     
-    def __init__(self, config: ModelConfig, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: ModelConfig):
+        super().__init__()
         self.attention = MultiHeadAttention(config)
-        self.ffn = tf.keras.Sequential([
-            layers.Dense(config.ff_dim, activation="gelu"),
-            layers.Dense(config.embedding_dim)
-        ])
-        self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = layers.Dropout(config.dropout_rate)
-        self.dropout2 = layers.Dropout(config.dropout_rate)
+        
+        # Feed-forward network
+        self.ffn = nn.Sequential(
+            nn.Linear(config.embedding_dim, config.ff_dim),
+            nn.GELU(),
+            nn.Linear(config.ff_dim, config.embedding_dim)
+        )
+        
+        self.layernorm1 = nn.LayerNorm(config.embedding_dim, eps=1e-6)
+        self.layernorm2 = nn.LayerNorm(config.embedding_dim, eps=1e-6)
+        self.dropout1 = nn.Dropout(config.dropout_rate)
+        self.dropout2 = nn.Dropout(config.dropout_rate)
     
-    def call(
+    def forward(
         self,
-        inputs: tf.Tensor,
-        mask: Optional[tf.Tensor] = None
-    ) -> tf.Tensor:
-        # Self-attention
+        inputs: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # Self-attention with residual connection
         attention_output = self.attention(inputs, inputs, inputs, mask)
         attention_output = self.dropout1(attention_output)
         out1 = self.layernorm1(inputs + attention_output)
         
-        # Feed-forward network
+        # Feed-forward network with residual connection
         ffn_output = self.ffn(out1)
         ffn_output = self.dropout2(ffn_output)
-        return self.layernorm2(out1 + ffn_output)
+        out2 = self.layernorm2(out1 + ffn_output)
+        
+        return out2
 
-class MelodiaModel(Model):
-    """Main Melodia model architecture"""
+class MelodiaModel(nn.Module):
+    """PyTorch implementation of the Melodia model"""
     
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
         
         # Token embeddings
-        self.token_embedding = layers.Embedding(
+        self.token_embedding = nn.Embedding(
             config.vocab_size,
-            config.embedding_dim
+            config.embedding_dim,
+            padding_idx=0  # Assuming 0 is the PAD token
         )
         
         # Transformer blocks
-        self.transformer_blocks = [
+        self.transformer_blocks = nn.ModuleList([
             TransformerBlock(config)
             for _ in range(config.num_layers)
-        ]
+        ])
         
         # Output layer
-        self.output_layer = layers.Dense(config.vocab_size)
+        self.output_layer = nn.Linear(config.embedding_dim, config.vocab_size)
         
-        # Loss tracker
-        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
+        # Initialize weights
+        self.apply(self._init_weights)
+        
+    def _init_weights(self, module):
+        """Initialize model weights"""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.ones_(module.weight)
+            torch.nn.init.zeros_(module.bias)
     
-    def call(
+    def forward(
         self,
-        inputs: tf.Tensor,
-        training: bool = False,
-        mask: Optional[tf.Tensor] = None
-    ) -> tf.Tensor:
+        inputs: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # Token embeddings
         x = self.token_embedding(inputs)
         
         # Apply transformer blocks
         for transformer_block in self.transformer_blocks:
-            x = transformer_block(x, mask)
+            x = transformer_block(x, mask=mask)
         
-        return self.output_layer(x)
+        # Output projection
+        logits = self.output_layer(x)
+        
+        return logits
     
-    def train_step(self, data: Tuple[tf.Tensor, tf.Tensor]) -> dict:
-        """Custom training step"""
-        x, y = data
+    def get_device(self):
+        """Get the device the model is on"""
+        return next(self.parameters()).device
+
+class MelodiaTrainer:
+    """PyTorch trainer for the Melodia model"""
+    
+    def __init__(self, model: MelodiaModel, model_config: ModelConfig, training_config=None):
+        self.model = model
+        self.config = model_config
+        self.training_config = training_config
         
-        with tf.GradientTape() as tape:
-            y_pred = self(x, training=True)
-            loss = self.compiled_loss(y, y_pred)
+        # Set device (GPU if available, else CPU)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model.to(self.device)
         
-        # Compute gradients
-        gradients = tape.gradient(loss, self.trainable_variables)
+        # Optimizer with gradient clipping
+        learning_rate = training_config.learning_rate if training_config else 0.001
+        self.optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=0.01
+        )
         
-        # Apply gradient clipping
-        gradients, _ = tf.clip_by_global_norm(
-            gradients,
-            self.config.gradient_clip_val
+        # Loss function
+        self.criterion = nn.CrossEntropyLoss(ignore_index=0)  # Ignore padding tokens
+        
+        # Learning rate scheduler
+        max_epochs = training_config.max_epochs if training_config else 100
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer,
+            T_max=max_epochs,
+            eta_min=learning_rate * 0.1
+        )
+        
+        # Metrics tracking
+        self.train_losses = []
+        self.train_accuracies = []
+        
+    def train_step(self, batch_inputs: torch.Tensor, batch_targets: torch.Tensor) -> Tuple[float, float]:
+        """Perform a single training step"""
+        self.model.train()
+        
+        # Move data to device
+        batch_inputs = batch_inputs.to(self.device)
+        batch_targets = batch_targets.to(self.device)
+        
+        # Forward pass
+        logits = self.model(batch_inputs)
+        
+        # Reshape for loss calculation
+        batch_size, seq_len, vocab_size = logits.shape
+        logits = logits.view(-1, vocab_size)
+        targets = batch_targets.view(-1)
+        
+        # Calculate loss
+        loss = self.criterion(logits, targets)
+        
+        # Backward pass
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        gradient_clip_val = self.training_config.gradient_clip_val if self.training_config else self.config.gradient_clip_val
+        torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(),
+            gradient_clip_val
         )
         
         # Update weights
-        self.optimizer.apply_gradients(
-            zip(gradients, self.trainable_variables)
-        )
+        self.optimizer.step()
         
-        # Update metrics
-        self.loss_tracker.update_state(loss)
+        # Calculate accuracy (excluding padding tokens)
+        with torch.no_grad():
+            predictions = torch.argmax(logits, dim=-1)
+            mask = targets != 0  # Exclude padding tokens
+            if mask.sum() > 0:
+                accuracy = (predictions[mask] == targets[mask]).float().mean().item()
+            else:
+                accuracy = 0.0
         
-        return {"loss": self.loss_tracker.result()}
+        return loss.item(), accuracy
+    
+    def validate_step(self, batch_inputs: torch.Tensor, batch_targets: torch.Tensor) -> Tuple[float, float]:
+        """Perform a single validation step"""
+        self.model.eval()
+        
+        with torch.no_grad():
+            # Move data to device
+            batch_inputs = batch_inputs.to(self.device)
+            batch_targets = batch_targets.to(self.device)
+            
+            # Forward pass
+            logits = self.model(batch_inputs)
+            
+            # Reshape for loss calculation
+            batch_size, seq_len, vocab_size = logits.shape
+            logits = logits.view(-1, vocab_size)
+            targets = batch_targets.view(-1)
+            
+            # Calculate loss
+            loss = self.criterion(logits, targets)
+            
+            # Calculate accuracy (excluding padding tokens)
+            predictions = torch.argmax(logits, dim=-1)
+            mask = targets != 0  # Exclude padding tokens
+            if mask.sum() > 0:
+                accuracy = (predictions[mask] == targets[mask]).float().mean().item()
+            else:
+                accuracy = 0.0
+        
+        return loss.item(), accuracy
+    
+    def save_model(self, path: str):
+        """Save the model and optimizer state"""
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'config': self.config,
+            'train_losses': self.train_losses,
+            'train_accuracies': self.train_accuracies,
+        }, path)
+    
+    def load_model(self, path: str):
+        """Load the model and optimizer state"""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        self.train_losses = checkpoint.get('train_losses', [])
+        self.train_accuracies = checkpoint.get('train_accuracies', [])
+        
+    def get_device_info(self) -> str:
+        """Get information about the device being used"""
+        if torch.cuda.is_available():
+            return f"GPU: {torch.cuda.get_device_name(0)}"
+        else:
+            return "CPU"

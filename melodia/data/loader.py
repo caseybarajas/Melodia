@@ -36,7 +36,7 @@ class MIDILoader:
         if not isinstance(self.config.valid_time_signatures, (list, tuple)):
             raise ValueError("valid_time_signatures must be a list or tuple")
             
-    def load_file(self, file_path: Union[str, Path]) -> List[MusicEvent]:
+    def load_midi(self, file_path: Union[str, Path]) -> List[MusicEvent]:
         """Load a MIDI file and convert it to a list of music events"""
         try:
             score = converter.parse(str(file_path))
@@ -44,6 +44,10 @@ class MIDILoader:
         except Exception as e:
             logger.error(f"Error loading MIDI file {file_path}: {str(e)}")
             return []
+    
+    def load_file(self, file_path: Union[str, Path]) -> List[MusicEvent]:
+        """Alias for load_midi for backward compatibility"""
+        return self.load_midi(file_path)
     
     def _process_score(self, score: stream.Score) -> List[MusicEvent]:
         """Process a music21 Score object into a list of MusicEvent objects"""
@@ -86,12 +90,22 @@ class MIDILoader:
         ))
         
         # Tempo
-        tmp = score.metronomeMarkBoundaries()
-        if tmp:
+        try:
+            tmp = score.metronomeMarkBoundaries()
+            if tmp:
+                tempo_mark = tmp[0][1]
+                tempo_value = tempo_mark.number if hasattr(tempo_mark, 'number') else float(tempo_mark)
+                events.append(MusicEvent(
+                    type='tempo',
+                    time=0.0,
+                    tempo=tempo_value
+                ))
+        except Exception:
+            # Default tempo if extraction fails
             events.append(MusicEvent(
                 type='tempo',
                 time=0.0,
-                tempo=tmp[0][1].number
+                tempo=120.0
             ))
     
     def _process_part(self, part: stream.Part) -> List[MusicEvent]:
@@ -116,10 +130,11 @@ class MIDILoader:
                     velocity=element.volume.velocity if element.volume.velocity else 64
                 ))
             elif isinstance(element, tempo.MetronomeMark):
+                tempo_value = element.number if hasattr(element, 'number') else float(element)
                 events.append(MusicEvent(
                     type='tempo',
                     time=element.offset,
-                    tempo=element.number
+                    tempo=tempo_value
                 ))
             elif isinstance(element, meter.TimeSignature):
                 if (element.numerator, element.denominator) in self.config.valid_time_signatures:

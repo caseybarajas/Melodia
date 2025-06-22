@@ -2,7 +2,8 @@
 
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Union
-import tensorflow as tf
+import torch
+from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
 from ..config import DataConfig
 from .loader import MusicEvent
@@ -11,6 +12,19 @@ from pathlib import Path
 import json
 
 logger = logging.getLogger(__name__)
+
+class MelodiaDataset(Dataset):
+    """PyTorch Dataset for music sequences"""
+    
+    def __init__(self, inputs: np.ndarray, targets: np.ndarray):
+        self.inputs = torch.from_numpy(inputs).long()
+        self.targets = torch.from_numpy(targets).long()
+        
+    def __len__(self):
+        return len(self.inputs)
+    
+    def __getitem__(self, idx):
+        return self.inputs[idx], self.targets[idx]
 
 class EventTokenizer:
     """Converts musical events to and from tokens"""
@@ -21,13 +35,13 @@ class EventTokenizer:
     EOS_TOKEN = 2
     UNK_TOKEN = 3
     
-    # Token type ranges (using prime numbers to avoid collisions)
-    NOTE_START = 10
-    VELOCITY_START = 127
-    DURATION_START = 227
-    TEMPO_START = 327
-    TIME_SIG_START = 427
-    KEY_SIG_START = 527
+    # Token type ranges (compact layout)
+    NOTE_START = 4
+    VELOCITY_START = 132  # 4 + 128
+    DURATION_START = 164  # 132 + 32
+    TEMPO_START = 176     # 164 + 12
+    TIME_SIG_START = 184  # 176 + 8
+    KEY_SIG_START = 189   # 184 + 5
     
     def __init__(self, config: DataConfig):
         self.config = config
@@ -132,6 +146,99 @@ class EventTokenizer:
         tokenizer.vocab_size = vocab_data['vocab_size']
         return tokenizer
 
+    def encode_events(self, events: List[MusicEvent]) -> List[int]:
+        """Convert a sequence of musical events to tokens"""
+        tokens = [self.BOS_TOKEN]
+        
+        for event in events:
+            if event.type == 'note' and event.pitch is not None:
+                # Note token
+                note_token = self.NOTE_START + event.pitch
+                tokens.append(note_token)
+                
+                # Velocity token (quantized)
+                if event.velocity is not None:
+                    vel_quantized = min(31, max(0, event.velocity // 4))
+                    vel_token = self.VELOCITY_START + vel_quantized
+                    tokens.append(vel_token)
+                
+                # Duration token (find closest match)
+                if event.duration is not None:
+                    durations = [0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+                    closest_dur_idx = min(range(len(durations)), 
+                                        key=lambda i: abs(durations[i] - event.duration))
+                    dur_token = self.DURATION_START + closest_dur_idx
+                    tokens.append(dur_token)
+            
+            elif event.type == 'tempo' and event.tempo is not None:
+                # Tempo token (find appropriate range)
+                tempo_ranges = [(20, 40), (40, 60), (60, 80), (80, 100),
+                              (100, 120), (120, 140), (140, 160), (160, 200)]
+                for i, (low, high) in enumerate(tempo_ranges):
+                    if low <= event.tempo < high:
+                        tempo_token = self.TEMPO_START + i
+                        tokens.append(tempo_token)
+                        break
+            
+            elif event.type == 'time_sig' and event.numerator is not None and event.denominator is not None:
+                # Time signature token
+                for i, (num, den) in enumerate(self.config.valid_time_signatures):
+                    if num == event.numerator and den == event.denominator:
+                        time_sig_token = self.TIME_SIG_START + i
+                        tokens.append(time_sig_token)
+                        break
+        
+        tokens.append(self.EOS_TOKEN)
+        return tokens
+    
+    def decode_tokens(self, tokens: List[int]) -> List[MusicEvent]:
+        """Convert a sequence of tokens back to musical events"""
+        events = []
+        current_note = None
+        current_velocity = None
+        current_duration = None
+        
+        for token in tokens:
+            if token in [self.PAD_TOKEN, self.BOS_TOKEN, self.EOS_TOKEN]:
+                continue
+            
+            if token >= self.NOTE_START and token < self.NOTE_START + 128:
+                # Complete previous note if any
+                if current_note is not None:
+                    events.append(MusicEvent(
+                        type='note',
+                        time=0.0,  # Time will be adjusted later
+                        pitch=current_note,
+                        velocity=current_velocity or 64,
+                        duration=current_duration or 1.0
+                    ))
+                
+                # Start new note
+                current_note = token - self.NOTE_START
+                current_velocity = None
+                current_duration = None
+            
+            elif token >= self.VELOCITY_START and token < self.VELOCITY_START + 32:
+                current_velocity = (token - self.VELOCITY_START) * 4
+            
+            elif token >= self.DURATION_START and token < self.DURATION_START + 12:
+                durations = [0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+                dur_idx = token - self.DURATION_START
+                if dur_idx < len(durations):
+                    current_duration = durations[dur_idx]
+        
+        # Complete final note if any
+        if current_note is not None:
+            events.append(MusicEvent(
+                type='note',
+                time=0.0,
+                pitch=current_note,
+                velocity=current_velocity or 64,
+                duration=current_duration or 1.0
+            ))
+        
+        return events
+
 class DataProcessor:
     """Handles data processing, augmentation, and batching for training"""
     
@@ -201,13 +308,21 @@ class DataProcessor:
         events_list: List[List[MusicEvent]],
         batch_size: int = 32,
         shuffle: bool = True
-    ) -> tf.data.Dataset:
+    ) -> DataLoader:
         """Prepare a TensorFlow dataset for training"""
         # Convert events to sequences
         sequences = []
         for events in events_list:
-            tokens = self.tokenizer.events_to_tokens(events)
-            if self.config.min_sequence_length <= len(tokens) <= self.config.max_sequence_length:
+            tokens = self.tokenizer.encode_events(events)
+            
+            # If sequence is too long, break it into chunks
+            if len(tokens) > self.config.max_sequence_length:
+                chunk_size = self.config.max_sequence_length - 1  # Leave room for overlap
+                for i in range(0, len(tokens) - self.config.min_sequence_length, chunk_size):
+                    chunk = tokens[i:i + self.config.max_sequence_length]
+                    if len(chunk) >= self.config.min_sequence_length:
+                        sequences.append(chunk)
+            elif len(tokens) >= self.config.min_sequence_length:
                 sequences.append(tokens)
         
         # Create input/target pairs
@@ -232,20 +347,22 @@ class DataProcessor:
                 targets.append(target_seq)
         
         # Convert to numpy arrays
-        inputs = np.array(inputs, dtype=np.int32)
-        targets = np.array(targets, dtype=np.int32)
+        inputs = np.array(inputs, dtype=np.int64)  # PyTorch prefers int64
+        targets = np.array(targets, dtype=np.int64)
         
-        # Create TensorFlow dataset
-        dataset = tf.data.Dataset.from_tensor_slices((inputs, targets))
+        # Create PyTorch dataset
+        dataset = MelodiaDataset(inputs, targets)
         
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=10000)
+        # Create DataLoader
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=0,  # Set to 0 for Windows compatibility
+            pin_memory=torch.cuda.is_available()
+        )
         
-        # Batch and prefetch
-        dataset = dataset.batch(batch_size)
-        dataset = dataset.prefetch(tf.data.AUTOTUNE)
-        
-        return dataset
+        return dataloader
 
     def _transpose_sequence(
         self,

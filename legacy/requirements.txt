@@ -1,4 +1,0 @@
-music21
-tensorflow
-numpy
-keras

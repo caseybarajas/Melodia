@@ -41,7 +41,7 @@ class MusicGenerator:
         
         # Initialize sequence
         if seed_events:
-            initial_tokens = self.tokenizer.events_to_tokens(seed_events)
+            initial_tokens = self.tokenizer.encode_events(seed_events)
         else:
             initial_tokens = [self.tokenizer.BOS_TOKEN]
         

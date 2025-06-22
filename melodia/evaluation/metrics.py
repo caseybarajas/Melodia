@@ -15,8 +15,9 @@ class MusicEvaluator:
     """Evaluates generated music using multiple metrics"""
     
     def __init__(self):
-        self.key_analyzer = analysis.floatingKey.KeyAnalyzer()
-        self.key_correlation_analyzer = analysis.correlate.KeyCorrelator()
+        # Initialize analyzers without streams - will be created per analysis
+        self.key_analyzer = None
+        self.key_correlation_analyzer = None
     
     def evaluate(
         self,
@@ -102,9 +103,13 @@ class MusicEvaluator:
         metrics = {}
         
         # Key strength
-        key_analysis = self.key_analyzer.process(score)
-        if key_analysis:
-            metrics['key_strength'] = key_analysis.correlation
+        try:
+            key_analyzer = analysis.floatingKey.KeyAnalyzer(score)
+            key_analysis = key_analyzer.process()
+            if key_analysis:
+                metrics['key_strength'] = key_analysis.correlation
+        except Exception:
+            metrics['key_strength'] = 0.0
         
         # Chord progression analysis
         chords = score.chordify()

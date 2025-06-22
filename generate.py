@@ -4,6 +4,7 @@ import argparse
 import logging
 from pathlib import Path
 import json
+import tensorflow as tf
 from typing import Optional, Dict
 
 from melodia.config import GenerationConfig, ModelConfig

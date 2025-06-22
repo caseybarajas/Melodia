@@ -1,23 +1,39 @@
-# Core dependencies
-tensorflow>=2.10.0
-numpy>=1.23.0
-music21>=8.1.0
-mido>=1.2.10
+# Deep Learning Framework with Excellent GPU Support
+torch>=2.5.0
+torchvision>=0.20.0
+torchaudio>=2.5.0
+# PyTorch automatically detects CUDA and provides excellent RTX 4060 Ti support
+# Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Music Processing Libraries
+music21>=9.1.0
+mido>=1.3.0
 pretty_midi>=0.2.10
 
-# Data processing
-pandas>=1.5.0
+# Data Science & ML
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
 
-# Testing
-pytest>=7.3.1
+# GUI Framework
+ttkbootstrap>=1.10.0
+
+# Progress Bars & UI
+tqdm>=4.64.0
+
+# Testing Framework
+pytest>=7.4.0
 pytest-cov>=4.1.0
 
 # Utilities
-tqdm>=4.65.0
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
 
 # Development tools
 black>=23.3.0
-flake8
+flake8>=6.0.0
 isort>=5.12.0
+
+# Optional: For better performance
+# numba>=0.58.0  # Uncomment for JIT compilation speedup

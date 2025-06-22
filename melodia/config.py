@@ -13,8 +13,9 @@ class ModelConfig:
     num_heads: int = 8
     ff_dim: int = 2048
     dropout_rate: float = 0.1
-    max_sequence_length: int = 1024
-    vocab_size: int = 512  # Will be updated based on data
+    max_sequence_length: int = 512  # Reasonable length for training
+    vocab_size: int = 256  # Will be updated based on data
+    gradient_clip_val: float = 1.0
 
 @dataclass
 class TrainingConfig:
@@ -32,8 +33,8 @@ class TrainingConfig:
 @dataclass
 class DataConfig:
     """Data processing configuration"""
-    max_sequence_length: int = 1024
-    min_sequence_length: int = 64
+    max_sequence_length: int = 512  # Reasonable length for training
+    min_sequence_length: int = 32
     sampling_rate: int = 44100
     hop_length: int = 512
     n_mels: int = 128

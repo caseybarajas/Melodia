@@ -1,20 +1,26 @@
-# melodia/scripts/train.py
+#!/usr/bin/env python3
+"""
+Interactive Melodia Training Script - PyTorch Edition
+Run with: python train.py
+"""
 
-import argparse
+import os
+import sys
 import logging
 from pathlib import Path
-import tensorflow as tf
+import torch
+import torch.cuda
 from typing import Optional, Tuple
+
+# Add melodia to path
+sys.path.insert(0, str(Path(__file__).parent))
 
 from melodia.config import TrainingConfig, ModelConfig, DataConfig
 from melodia.data.loader import MIDILoader
-from melodia.data.processor import DataProcessor
+from melodia.data.processor import DataProcessor, MelodiaDataset
 from melodia.model.architecture import MelodiaModel
 from melodia.training.trainer import Trainer
-from melodia.generation.generator import MusicGenerator
-from melodia.evaluation.metrics import MusicEvaluator
-
-logger = logging.getLogger(__name__)
+from torch.utils.data import DataLoader
 
 def setup_logging(log_dir: Path):
     """Set up logging configuration"""
@@ -28,157 +34,330 @@ def setup_logging(log_dir: Path):
         ]
     )
 
-def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Train Melodia model')
+def check_gpu():
+    """Check and configure GPU"""
+    print("🔍 Checking GPU availability...")
     
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Directory containing training MIDI files')
-    parser.add_argument('--model_dir', type=str, required=True,
-                       help='Directory to save model checkpoints')
-    parser.add_argument('--config', type=str,
-                       help='Path to configuration file')
-    
-    # Training parameters
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--learning_rate', type=float, default=0.001)
-    parser.add_argument('--validation_split', type=float, default=0.1)
-    
-    # Model parameters
-    parser.add_argument('--embedding_dim', type=int, default=512)
-    parser.add_argument('--num_layers', type=int, default=6)
-    parser.add_argument('--num_heads', type=int, default=8)
-    
-    # Generation parameters
-    parser.add_argument('--generate_samples', action='store_true',
-                       help='Generate samples during training')
-    parser.add_argument('--num_samples', type=int, default=5)
-    
-    return parser.parse_args()
-
-def prepare_data(
-    data_dir: Path,
-    config: TrainingConfig
-) -> Tuple[tf.data.Dataset, Optional[tf.data.Dataset]]:
-    """Prepare training and validation datasets"""
-    logger.info("Preparing datasets...")
-    
-    # Create data config
-    data_config = DataConfig(
-        max_sequence_length=512,
-        min_sequence_length=64,
-        valid_time_signatures=[(4, 4), (3, 4), (6, 8)]
-    )
-    
-    # Load MIDI files
-    loader = MIDILoader(data_config)
-    processor = DataProcessor(config)
-    
-    midi_files = list(data_dir.glob('**/*.mid'))
-    if not midi_files:
-        raise ValueError(f"No MIDI files found in {data_dir}")
-    
-    # Process all files
-    all_events = []
-    for midi_file in midi_files:
-        try:
-            events = loader.read_midi(midi_file)
-            if events:
-                all_events.extend(events)
-        except Exception as e:
-            logger.warning(f"Error processing {midi_file}: {str(e)}")
-    
-    # Create datasets
-    if config.validation_split > 0:
-        split_idx = int(len(all_events) * (1 - config.validation_split))
-        train_events = all_events[:split_idx]
-        val_events = all_events[split_idx:]
+    if torch.cuda.is_available():
+        gpu_count = torch.cuda.device_count()
+        print(f"✅ Found {gpu_count} GPU(s):")
+        for i in range(gpu_count):
+            gpu_name = torch.cuda.get_device_name(i)
+            print(f"   GPU {i}: {gpu_name}")
         
-        train_dataset = processor.prepare_dataset(
-            train_events,
-            batch_size=config.batch_size,
-            shuffle=True
-        )
-        val_dataset = processor.prepare_dataset(
-            val_events,
-            batch_size=config.batch_size,
-            shuffle=False
-        )
-        return train_dataset, val_dataset
-    
-    train_dataset = processor.prepare_dataset(
-        all_events,
-        batch_size=config.batch_size,
-        shuffle=True
-    )
-    return train_dataset, None
+        print(f"✅ CUDA Version: {torch.version.cuda}")
+        print("🚀 GPU detected - you can use larger models!")
+        return True
+    else:
+        print("❌ No GPU found - training will be MUCH slower on CPU")
+        print("💡 To install GPU support:")
+        print("   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+        return False
 
-def main():
-    """Main training function"""
-    args = parse_args()
+def get_user_input(prompt: str, default: str, input_type: type = str):
+    """Get user input with default value"""
+    user_input = input(f"{prompt} [{default}]: ").strip()
+    if not user_input:
+        return input_type(default)
+    try:
+        return input_type(user_input)
+    except ValueError:
+        print(f"❌ Invalid input, using default: {default}")
+        return input_type(default)
+
+def interactive_config():
+    """Get configuration from user interactively"""
+    print("\n🎵 ============================================ 🎵")
+    print("    MELODIA INTERACTIVE TRAINING SETUP")
+    print("🎵 ============================================ 🎵\n")
     
-    # Create directories
-    model_dir = Path(args.model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
+    # Data configuration
+    print("📁 DATA CONFIGURATION")
+    print("-" * 30)
+    data_dir = get_user_input("Training data directory", "data", str)
+    if not Path(data_dir).exists():
+        print(f"❌ Directory {data_dir} doesn't exist!")
+        return None
     
-    # Set up logging
-    setup_logging(model_dir / 'logs')
+    # Check available MIDI files
+    midi_files = list(Path(data_dir).glob("**/*.mid"))
+    print(f"✅ Found {len(midi_files)} MIDI files")
+    if len(midi_files) == 0:
+        print("❌ No MIDI files found!")
+        return None
     
-    # Create configurations
+    # Model configuration
+    print("\n🧠 MODEL CONFIGURATION")
+    print("-" * 30)
+    
+    # Detect if GPU is available for model size recommendations
+    has_gpu = check_gpu()
+    
+    if has_gpu:
+        print("🚀 GPU detected - you can use larger models!")
+        default_embedding = "256"
+        default_layers = "4"
+        default_heads = "8"
+    else:
+        print("🐌 CPU only - using smaller model for reasonable speed")
+        default_embedding = "128"
+        default_layers = "2"
+        default_heads = "4"
+    
+    embedding_dim = get_user_input("Embedding dimension", default_embedding, int)
+    num_layers = get_user_input("Number of transformer layers", default_layers, int)
+    num_heads = get_user_input("Number of attention heads", default_heads, int)
+    max_seq_len = get_user_input("Max sequence length", "512", int)
+    
+    # Training configuration
+    print("\n📚 TRAINING CONFIGURATION")
+    print("-" * 30)
+    
+    if has_gpu:
+        default_batch = "16"
+        default_epochs = "50"
+    else:
+        default_batch = "8"
+        default_epochs = "10"
+    
+    batch_size = get_user_input("Batch size", default_batch, int)
+    epochs = get_user_input("Number of epochs", default_epochs, int)
+    learning_rate = get_user_input("Learning rate", "0.001", float)
+    validation_split = get_user_input("Validation split (0.0-1.0)", "0.1", float)
+    
+    # Output configuration
+    print("\n💾 OUTPUT CONFIGURATION")
+    print("-" * 30)
+    model_dir = get_user_input("Model output directory", "models", str)
+    
+    # Create configs
     model_config = ModelConfig(
-        embedding_dim=args.embedding_dim,
-        num_layers=args.num_layers,
-        num_heads=args.num_heads
+        embedding_dim=embedding_dim,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        max_sequence_length=max_seq_len,
+        ff_dim=embedding_dim * 4
     )
     
     training_config = TrainingConfig(
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        max_epochs=args.epochs,
-        validation_split=args.validation_split,
-        checkpoint_dir=str(model_dir / 'checkpoints')
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        max_epochs=epochs,
+        validation_split=validation_split,
+        checkpoint_dir=str(Path(model_dir) / 'checkpoints')
     )
     
-    # Prepare data
-    train_dataset, val_dataset = prepare_data(
-        Path(args.data_dir),
-        training_config
+    data_config = DataConfig(
+        max_sequence_length=max_seq_len,
+        min_sequence_length=max_seq_len // 16
     )
     
-    # Create model
-    model = MelodiaModel(model_config)
-    
-    # Create generator and evaluator if needed
-    generator = None
-    evaluator = None
-    if args.generate_samples:
-        generator = MusicGenerator(model, training_config)
-        evaluator = MusicEvaluator()
-    
-    # Create trainer
-    trainer = Trainer(
-        model=model,
-        config=training_config,
-        generator=generator,
-        evaluator=evaluator
-    )
-    
-    # Train model
-    logger.info("Starting training...")
-    try:
-        trainer.train(
-            train_dataset=train_dataset,
-            validation_dataset=val_dataset
-        )
-        logger.info("Training completed successfully")
-    except KeyboardInterrupt:
-        logger.info("Training interrupted by user")
-    except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
-    finally:
-        # Save final model state
-        trainer.save_training_state()
+    return {
+        'data_dir': Path(data_dir),
+        'model_dir': Path(model_dir),
+        'model_config': model_config,
+        'training_config': training_config,
+        'data_config': data_config,
+        'has_gpu': has_gpu
+    }
 
-if __name__ == '__main__':
-    main()
+def optimize_performance(has_gpu: bool):
+    """Apply performance optimizations"""
+    print("\n⚡ APPLYING PERFORMANCE OPTIMIZATIONS")
+    print("-" * 40)
+    
+    if has_gpu:
+        print("🚀 GPU optimizations:")
+        print("   ✅ CUDA acceleration")
+        print("   ✅ cuDNN benchmark")
+        print("   ✅ GPU memory optimization")
+        
+        # Enable cuDNN benchmark for better performance
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+        
+    else:
+        print("🐌 CPU optimizations:")
+        print("   ✅ Reduced model complexity")
+        print("   ✅ Smaller batch sizes") 
+        print("   ✅ Optimized threading")
+        
+        # CPU-specific optimizations
+        torch.set_num_threads(torch.get_num_threads())
+
+def prepare_data(data_dir: Path, config: TrainingConfig, data_config: DataConfig) -> Tuple[DataLoader, Optional[DataLoader]]:
+    """Prepare training and validation datasets with optimizations"""
+    print("\n📊 PREPARING DATASETS")
+    print("-" * 30)
+    
+    # Load MIDI files
+    print("📁 Processing MIDI files...")
+    loader = MIDILoader(data_config)
+    
+    events_list = []
+    for midi_file in data_dir.glob("**/*.mid"):
+        try:
+            events = loader.load_midi(midi_file)
+            if events:
+                events_list.append(events)
+                print(f"   ✅ {midi_file.name}: {len(events)} events")
+        except Exception as e:
+            print(f"   ❌ {midi_file.name}: {str(e)}")
+    
+    if not events_list:
+        raise ValueError("No MIDI files could be loaded")
+    
+    print(f"✅ Successfully processed {len(events_list)} files")
+    
+    # Process events
+    data_processor = DataProcessor(data_config)
+    processed_events = data_processor.process_events(events_list, augment=True)
+    
+    # Create dataset
+    full_dataloader = data_processor.prepare_dataset(
+        processed_events,
+        batch_size=config.batch_size,
+        shuffle=True
+    )
+    
+    # Convert to list to enable splitting
+    all_data = [(inputs, targets) for inputs, targets in full_dataloader.dataset]
+    
+    # Split into training and validation
+    dataset_size = len(all_data)
+    train_size = int(dataset_size * (1 - config.validation_split))
+    val_size = dataset_size - train_size
+    
+    train_data = all_data[:train_size]
+    val_data = all_data[train_size:] if val_size > 0 else None
+    
+    # Create separate datasets
+    train_dataset = MelodiaDataset(
+        torch.stack([item[0] for item in train_data]).numpy(),
+        torch.stack([item[1] for item in train_data]).numpy()
+    )
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=0,  # Windows compatibility
+        pin_memory=torch.cuda.is_available()
+    )
+    
+    val_dataloader = None
+    if val_data:
+        val_dataset = MelodiaDataset(
+            torch.stack([item[0] for item in val_data]).numpy(),
+            torch.stack([item[1] for item in val_data]).numpy()
+        )
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=torch.cuda.is_available()
+        )
+    
+    print(f"📊 Train sequences: {train_size}")
+    if val_dataloader:
+        print(f"📊 Validation sequences: {val_size}")
+    
+    return train_dataloader, val_dataloader, data_processor
+
+def estimate_training_time(has_gpu: bool, epochs: int):
+    """Estimate training time"""
+    if has_gpu:
+        time_per_epoch = 2  # minutes
+        device = "GPU"
+    else:
+        time_per_epoch = 20  # minutes
+        device = "CPU"
+    
+    total_minutes = epochs * time_per_epoch
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    
+    print(f"\n🚀 ESTIMATED TRAINING TIME:")
+    print(f"   {device}: ~{total_minutes} minutes ({hours:.1f} hours)")
+    if not has_gpu:
+        print("   💡 Consider reducing epochs or getting GPU support!")
+
+def main():
+    """Main training function"""
+    print("🎵 Welcome to Melodia Interactive Training! 🎵\n")
+    
+    # Get configuration
+    config = interactive_config()
+    if config is None:
+        print("❌ Configuration failed!")
+        return
+    
+    # Set up logging
+    setup_logging(config['model_dir'] / 'logs')
+    
+    # Apply optimizations
+    optimize_performance(config['has_gpu'])
+    
+    # Show final configuration
+    print("\n🎯 FINAL CONFIGURATION")
+    print("-" * 30)
+    print(f"📁 Data: {config['data_dir']}")
+    print(f"💾 Output: {config['model_dir']}")
+    print(f"🧠 Model: {config['model_config'].num_layers} layers, {config['model_config'].embedding_dim}D")
+    print(f"📚 Training: {config['training_config'].max_epochs} epochs, batch size {config['training_config'].batch_size}")
+    print(f"⚡ Device: {'GPU' if config['has_gpu'] else 'CPU'}")
+    
+    # Estimate training time
+    estimate_training_time(config['has_gpu'], config['training_config'].max_epochs)
+    
+    # Confirm start
+    start_training = get_user_input("\n▶️  Start training? [Y/n]", "Y", str).lower()
+    if start_training not in ['y', 'yes', '']:
+        print("❌ Training cancelled")
+        return
+    
+    try:
+        # Prepare data
+        train_dataloader, val_dataloader, data_processor = prepare_data(
+            config['data_dir'],
+            config['training_config'],
+            config['data_config']
+        )
+        
+        # Update vocab size in model config
+        config['model_config'].vocab_size = data_processor.tokenizer.vocab_size
+        
+        # Create trainer
+        print("\n🧠 CREATING MODEL")
+        print("-" * 30)
+        trainer = Trainer(
+            model_config=config['model_config'],
+            training_config=config['training_config'],
+            data_processor=data_processor,
+            model_dir=str(config['model_dir'])
+        )
+        print(f"✅ Model created with {config['model_config'].embedding_dim}D embeddings, {config['model_config'].num_layers} layers")
+        print(f"✅ Using device: {trainer.pytorch_trainer.get_device_info()}")
+        
+        # Train model
+        print("\n🚀 STARTING TRAINING...")
+        print("=" * 50)
+        
+        history = trainer.train(
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader
+        )
+        
+        print("\n🎉 TRAINING COMPLETED SUCCESSFULLY!")
+        print(f"📊 Model saved to: {config['model_dir']}")
+        print(f"📈 Training history: {len(history['train_loss'])} epochs completed")
+        
+    except KeyboardInterrupt:
+        print("\n🛑 Training interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Training failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main() 

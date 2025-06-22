@@ -93,6 +93,42 @@ class MelodiaGUI:
                                      command=self.start_training)
         self.train_button.pack(pady=10)
         
+        # Progress section
+        progress_frame = ttk.LabelFrame(self.training_tab,
+                                      text="Training Progress",
+                                      style='info.TLabelframe',
+                                      padding=(20, 10))
+        progress_frame.grid(row=3, column=0, sticky="ew", pady=20)
+        
+        # Epoch progress
+        ttk.Label(progress_frame, text="Epochs:").grid(row=0, column=0, sticky="w", pady=5)
+        self.epoch_progress = ttk.Progressbar(progress_frame,
+                                            mode='determinate',
+                                            style='success.Horizontal.TProgressbar')
+        self.epoch_progress.grid(row=0, column=1, sticky="ew", padx=10, pady=5)
+        self.epoch_label = ttk.Label(progress_frame, text="0/0")
+        self.epoch_label.grid(row=0, column=2, sticky="w", pady=5)
+        
+        # Batch progress
+        ttk.Label(progress_frame, text="Batches:").grid(row=1, column=0, sticky="w", pady=5)
+        self.batch_progress = ttk.Progressbar(progress_frame,
+                                            mode='determinate',
+                                            style='info.Horizontal.TProgressbar')
+        self.batch_progress.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+        self.batch_label = ttk.Label(progress_frame, text="0/0")
+        self.batch_label.grid(row=1, column=2, sticky="w", pady=5)
+        
+        # Metrics display
+        ttk.Label(progress_frame, text="Loss:").grid(row=2, column=0, sticky="w", pady=5)
+        self.loss_label = ttk.Label(progress_frame, text="--", style='secondary.TLabel')
+        self.loss_label.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        
+        ttk.Label(progress_frame, text="Accuracy:").grid(row=3, column=0, sticky="w", pady=5)
+        self.accuracy_label = ttk.Label(progress_frame, text="--", style='secondary.TLabel')
+        self.accuracy_label.grid(row=3, column=1, sticky="w", padx=10, pady=5)
+        
+        progress_frame.columnconfigure(1, weight=1)
+        
         # Configure weights
         self.training_tab.columnconfigure(0, weight=1)
         data_frame.columnconfigure(1, weight=1)
@@ -190,7 +226,53 @@ class MelodiaGUI:
             messagebox.showerror("Error", "Invalid training parameters")
             return
         
-        messagebox.showinfo("Training", "Training started! (Placeholder)")
+        # Update UI for training start
+        self.train_button.config(state='disabled', text='Training...')
+        self.epoch_progress['maximum'] = epochs
+        self.epoch_label.config(text=f"0/{epochs}")
+        
+        # Demo progress update (in real implementation, this would be connected to actual training)
+        self.demo_training_progress(epochs)
+    
+    def demo_training_progress(self, total_epochs):
+        """Demo function to show progress bars working"""
+        import threading
+        import time
+        
+        def update_progress():
+            for epoch in range(1, total_epochs + 1):
+                # Update epoch progress
+                self.epoch_progress['value'] = epoch
+                self.epoch_label.config(text=f"{epoch}/{total_epochs}")
+                
+                # Simulate batch progress
+                batches = 100  # Demo: assume 100 batches per epoch
+                self.batch_progress['maximum'] = batches
+                
+                for batch in range(1, batches + 1):
+                    self.batch_progress['value'] = batch
+                    self.batch_label.config(text=f"{batch}/{batches}")
+                    
+                    # Update demo metrics
+                    demo_loss = 1.0 - (epoch * batches + batch) / (total_epochs * batches) * 0.8
+                    demo_acc = (epoch * batches + batch) / (total_epochs * batches) * 0.9
+                    self.loss_label.config(text=f"{demo_loss:.4f}")
+                    self.accuracy_label.config(text=f"{demo_acc:.3f}")
+                    
+                    time.sleep(0.01)  # Small delay to show progress
+                
+                # Reset batch progress for next epoch
+                self.batch_progress['value'] = 0
+                time.sleep(0.1)
+            
+            # Training complete
+            self.train_button.config(state='normal', text='Start Training')
+            messagebox.showinfo("Training", "Training completed!")
+        
+        # Run progress update in separate thread to avoid freezing GUI
+        thread = threading.Thread(target=update_progress)
+        thread.daemon = True
+        thread.start()
     
     def generate_music(self):
         if not self.model_path_var.get():
