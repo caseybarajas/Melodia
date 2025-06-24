@@ -152,12 +152,28 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# model chekpoints
+# model checkpoints and generated files
 models/checkpoints/
 models/logs
 old/
 /models/checkpoints
 /models/
+
+# Generated program outputs
+checkpoints/
+logs/
+outputs/
+*.mid
+*.h5
+*.pt
+*.pth
+*.pkl
+*.joblib
+
+# Training artifacts
+wandb/
+tensorboard_logs/
+*.tfevents.*
 
 
 
