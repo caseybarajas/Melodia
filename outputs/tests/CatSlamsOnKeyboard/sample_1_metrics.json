@@ -1,0 +1,22 @@
+{
+  "note_density": 1.4470046082949308,
+  "pitch_range": 39,
+  "avg_pitch": 66.73221757322176,
+  "avg_duration": 0.6910828025477707,
+  "duration_variance": 0.06778672562781451,
+  "key_strength": 0.0,
+  "harmonic_rhythm": 1.4470046082949308,
+  "avg_chord_complexity": 1.5222929936305734,
+  "harmonic_tension": 0.1280962491153574,
+  "rhythmic_complexity": 0.025477707006369428,
+  "syncopation": 0.5172413793103449,
+  "rhythmic_consistency": 0.2229299363057325,
+  "groove_strength": 0.7413793103448276,
+  "avg_melodic_interval": 9.416666666666666,
+  "melodic_range": 28,
+  "stepwise_motion_ratio": 0.17307692307692307,
+  "contour_variety": 0.025806451612903226,
+  "phrase_length_consistency": 1.0,
+  "phrase_similarity": 0.0,
+  "form_strength": 0.0
+}

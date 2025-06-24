@@ -83,18 +83,36 @@ class MusicEvaluator:
         
         # Note density
         total_duration = score.duration.quarterLength
+        if total_duration == 0:
+            total_duration = 1.0  # Avoid division by zero
+        
         note_count = len(score.flat.notes)
         metrics['note_density'] = note_count / total_duration
         
-        # Pitch range
-        pitches = [n.pitch.midi for n in score.flat.notes]
-        metrics['pitch_range'] = max(pitches) - min(pitches)
-        metrics['avg_pitch'] = np.mean(pitches)
+        # Collect all pitches from notes and chords
+        pitches = []
+        for n in score.flat.notes:
+            if isinstance(n, music21.note.Note):
+                pitches.append(n.pitch.midi)
+            elif isinstance(n, music21.chord.Chord):
+                # For chords, use all pitches or just the highest one
+                pitches.extend([p.midi for p in n.pitches])
+        
+        if pitches:
+            metrics['pitch_range'] = max(pitches) - min(pitches)
+            metrics['avg_pitch'] = np.mean(pitches)
+        else:
+            metrics['pitch_range'] = 0
+            metrics['avg_pitch'] = 60  # Middle C as default
         
         # Duration statistics
         durations = [n.duration.quarterLength for n in score.flat.notes]
-        metrics['avg_duration'] = np.mean(durations)
-        metrics['duration_variance'] = np.var(durations)
+        if durations:
+            metrics['avg_duration'] = np.mean(durations)
+            metrics['duration_variance'] = np.var(durations)
+        else:
+            metrics['avg_duration'] = 1.0
+            metrics['duration_variance'] = 0.0
         
         return metrics
     
@@ -164,24 +182,47 @@ class MusicEvaluator:
             if isinstance(n, music21.note.Note):
                 melody.append(n)
             elif isinstance(n, music21.chord.Chord):
-                melody.append(n.sortDiatonically()[-1])
+                # Extract the highest note from the chord using pitches
+                if n.pitches:
+                    highest_pitch = max(n.pitches, key=lambda p: p.midi)
+                    highest_note = music21.note.Note(
+                        pitch=highest_pitch,
+                        quarterLength=n.duration.quarterLength
+                    )
+                    highest_note.offset = n.offset
+                    melody.append(highest_note)
         
-        if melody:
+        if melody and len(melody) > 1:
             # Melodic intervals
-            intervals = [
-                abs(melody[i+1].pitch.midi - melody[i].pitch.midi)
-                for i in range(len(melody)-1)
-            ]
+            intervals = []
+            for i in range(len(melody)-1):
+                try:
+                    interval = abs(melody[i+1].pitch.midi - melody[i].pitch.midi)
+                    intervals.append(interval)
+                except AttributeError:
+                    # Skip if pitch access fails
+                    continue
             
-            metrics['avg_melodic_interval'] = np.mean(intervals)
-            metrics['melodic_range'] = max(intervals) if intervals else 0
-            
-            # Stepwise motion ratio
-            stepwise = sum(1 for i in intervals if i <= 2)
-            metrics['stepwise_motion_ratio'] = stepwise / len(intervals) if intervals else 0
-            
-            # Melodic contour
-            metrics['contour_variety'] = self._compute_contour_variety(melody)
+            if intervals:
+                metrics['avg_melodic_interval'] = np.mean(intervals)
+                metrics['melodic_range'] = max(intervals)
+                
+                # Stepwise motion ratio
+                stepwise = sum(1 for i in intervals if i <= 2)
+                metrics['stepwise_motion_ratio'] = stepwise / len(intervals)
+                
+                # Melodic contour
+                metrics['contour_variety'] = self._compute_contour_variety(melody)
+            else:
+                metrics['avg_melodic_interval'] = 0.0
+                metrics['melodic_range'] = 0
+                metrics['stepwise_motion_ratio'] = 0.0
+                metrics['contour_variety'] = 0.0
+        else:
+            metrics['avg_melodic_interval'] = 0.0
+            metrics['melodic_range'] = 0
+            metrics['stepwise_motion_ratio'] = 0.0
+            metrics['contour_variety'] = 0.0
         
         return metrics
     
@@ -311,17 +352,25 @@ class MusicEvaluator:
         
         contours = []
         for i in range(len(melody)-2):
-            # Determine contour direction
-            if melody[i+1].pitch.midi > melody[i].pitch.midi:
-                if melody[i+2].pitch.midi > melody[i+1].pitch.midi:
-                    contours.append('up')
+            try:
+                # Determine contour direction
+                pitch1 = melody[i].pitch.midi
+                pitch2 = melody[i+1].pitch.midi
+                pitch3 = melody[i+2].pitch.midi
+                
+                if pitch2 > pitch1:
+                    if pitch3 > pitch2:
+                        contours.append('up')
+                    else:
+                        contours.append('peak')
                 else:
-                    contours.append('peak')
-            else:
-                if melody[i+2].pitch.midi < melody[i+1].pitch.midi:
-                    contours.append('down')
-                else:
-                    contours.append('valley')
+                    if pitch3 < pitch2:
+                        contours.append('down')
+                    else:
+                        contours.append('valley')
+            except AttributeError:
+                # Skip if pitch access fails
+                continue
         
         # Count unique contour patterns
         unique_patterns = len(set(contours))

@@ -89,24 +89,87 @@ class MIDILoader:
             key=str(ks)
         ))
         
-        # Tempo
+        # Tempo - FIXED: Proper handling of different MetronomeMark types
         try:
-            tmp = score.metronomeMarkBoundaries()
-            if tmp:
-                tempo_mark = tmp[0][1]
-                tempo_value = tempo_mark.number if hasattr(tempo_mark, 'number') else float(tempo_mark)
-                events.append(MusicEvent(
-                    type='tempo',
-                    time=0.0,
-                    tempo=tempo_value
-                ))
-        except Exception:
-            # Default tempo if extraction fails
+            # Method 1: Try getting tempo from score analyze
+            tempo_value = 120.0  # Default
+            
+            # Try multiple methods to extract tempo
+            metronome_marks = score.flat.getElementsByClass(tempo.MetronomeMark)
+            if metronome_marks:
+                tempo_mark = metronome_marks[0]
+                tempo_value = self._extract_tempo_from_mark(tempo_mark)
+            else:
+                # Try getting from metronomeMarkBoundaries
+                boundaries = score.metronomeMarkBoundaries()
+                if boundaries:
+                    tempo_mark = boundaries[0][1]
+                    tempo_value = self._extract_tempo_from_mark(tempo_mark)
+                else:
+                    # Try analyzing tempo from note durations
+                    try:
+                        tempo_indication = score.analyze('tempo')
+                        if hasattr(tempo_indication, 'number'):
+                            tempo_value = float(tempo_indication.number)
+                    except:
+                        pass
+                        
+            events.append(MusicEvent(
+                type='tempo',
+                time=0.0,
+                tempo=float(tempo_value)
+            ))
+            
+        except Exception as e:
+            logger.warning(f"Failed to extract tempo: {str(e)}, using default 120 BPM")
             events.append(MusicEvent(
                 type='tempo',
                 time=0.0,
                 tempo=120.0
             ))
+    
+    def _extract_tempo_from_mark(self, tempo_mark) -> float:
+        """Extract tempo value from various MetronomeMark formats"""
+        # If tempo_mark is already a float or int, just return it
+        if isinstance(tempo_mark, (float, int)):
+            return float(tempo_mark)
+        
+        tempo_value = 120.0  # Default
+        try:
+            # Try direct number attribute
+            if hasattr(tempo_mark, 'number') and tempo_mark.number is not None:
+                if isinstance(tempo_mark.number, (int, float)):
+                    tempo_value = float(tempo_mark.number)
+                else:
+                    # Handle Duration objects or other complex types
+                    tempo_value = float(getattr(tempo_mark.number, 'quarterLength', 120.0))
+            # Try numberSounding attribute  
+            elif hasattr(tempo_mark, 'numberSounding') and tempo_mark.numberSounding is not None:
+                tempo_value = float(tempo_mark.numberSounding)
+            # Try getQuarterBPM method
+            elif hasattr(tempo_mark, 'getQuarterBPM'):
+                tempo_value = float(tempo_mark.getQuarterBPM())
+            # Try text-based tempo extraction
+            elif hasattr(tempo_mark, 'text') and tempo_mark.text:
+                # Simple text parsing for common tempo markings
+                text = tempo_mark.text.lower()
+                tempo_map = {
+                    'largo': 60, 'adagio': 70, 'andante': 90, 'moderato': 108,
+                    'allegro': 132, 'presto': 168, 'prestissimo': 200
+                }
+                for marking, bpm in tempo_map.items():
+                    if marking in text:
+                        tempo_value = float(bpm)
+                        break
+            # Ensure reasonable tempo range
+            if tempo_value < 30:
+                tempo_value = 60.0
+            elif tempo_value > 300:
+                tempo_value = 120.0
+        except Exception as e:
+            logger.debug(f"Error extracting tempo from mark: {e}")
+            tempo_value = 120.0
+        return tempo_value
     
     def _process_part(self, part: stream.Part) -> List[MusicEvent]:
         """Process a single part/voice of the score"""
@@ -114,23 +177,28 @@ class MIDILoader:
         
         for element in part.recurse():
             if isinstance(element, note.Note):
-                events.append(MusicEvent(
-                    type='note',
-                    time=element.offset,
-                    duration=element.duration.quarterLength,
-                    pitch=element.pitch.midi,
-                    velocity=element.volume.velocity if element.volume.velocity else 64
-                ))
+                # Filter out invalid notes
+                if hasattr(element.pitch, 'midi') and 0 <= element.pitch.midi <= 127:
+                    events.append(MusicEvent(
+                        type='note',
+                        time=element.offset,
+                        duration=element.duration.quarterLength,
+                        pitch=element.pitch.midi,
+                        velocity=element.volume.velocity if element.volume.velocity else 64
+                    ))
             elif isinstance(element, chord.Chord):
-                events.append(MusicEvent(
-                    type='chord',
-                    time=element.offset,
-                    duration=element.duration.quarterLength,
-                    pitch=[p.midi for p in element.pitches],
-                    velocity=element.volume.velocity if element.volume.velocity else 64
-                ))
+                # Process chords and filter valid pitches
+                valid_pitches = [p.midi for p in element.pitches if 0 <= p.midi <= 127]
+                if valid_pitches:
+                    events.append(MusicEvent(
+                        type='chord',
+                        time=element.offset,
+                        duration=element.duration.quarterLength,
+                        pitch=valid_pitches,
+                        velocity=element.volume.velocity if element.volume.velocity else 64
+                    ))
             elif isinstance(element, tempo.MetronomeMark):
-                tempo_value = element.number if hasattr(element, 'number') else float(element)
+                tempo_value = self._extract_tempo_from_mark(element)
                 events.append(MusicEvent(
                     type='tempo',
                     time=element.offset,

@@ -1,6 +1,7 @@
 # melodia/generation/generator.py
 
-import tensorflow as tf
+import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Optional, Union, Tuple
 from ..config import GenerationConfig, ModelConfig
@@ -11,17 +12,23 @@ import logging
 logger = logging.getLogger(__name__)
 
 class MusicGenerator:
-    """Handles music generation using the trained model"""
+    """Handles music generation using the trained PyTorch model"""
     
     def __init__(
         self,
-        model: tf.keras.Model,
+        model: torch.nn.Module,
         tokenizer: EventTokenizer,
-        config: GenerationConfig
+        config: GenerationConfig,
+        device: Optional[torch.device] = None
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.config = config
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Move model to device
+        self.model.to(self.device)
+        self.model.eval()
     
     def generate(
         self,
@@ -48,23 +55,24 @@ class MusicGenerator:
         current_tokens = initial_tokens
         
         # Generate tokens
-        while len(current_tokens) < max_length:
-            next_token = self._generate_next_token(
-                current_tokens,
-                conditions,
-                temperature,
-                top_k,
-                top_p,
-                repetition_penalty
-            )
-            
-            if next_token == self.tokenizer.EOS_TOKEN:
-                break
+        with torch.no_grad():
+            while len(current_tokens) < max_length:
+                next_token = self._generate_next_token(
+                    current_tokens,
+                    conditions,
+                    temperature,
+                    top_k,
+                    top_p,
+                    repetition_penalty
+                )
                 
-            current_tokens.append(next_token)
+                if next_token == self.tokenizer.EOS_TOKEN:
+                    break
+                    
+                current_tokens.append(next_token)
         
         # Convert back to events
-        generated_events = self.tokenizer.tokens_to_events(current_tokens)
+        generated_events = self.tokenizer.decode_tokens(current_tokens)
         return generated_events
     
     def _generate_next_token(
@@ -77,62 +85,59 @@ class MusicGenerator:
         repetition_penalty: float
     ) -> int:
         """Generate the next token based on current sequence"""
-        # Prepare input
-        model_input = tf.constant([current_tokens], dtype=tf.int32)
+        # Prepare input tensor
+        input_tensor = torch.tensor([current_tokens], dtype=torch.long, device=self.device)
         
         # Get model predictions
-        predictions = self.model(
-            model_input,
-            training=False
-        )
-        
-        # Get logits for next token
-        next_token_logits = predictions[0, -1, :]
-        
-        # Apply repetition penalty
-        if repetition_penalty != 1.0:
-            next_token_logits = self._apply_repetition_penalty(
-                next_token_logits,
-                current_tokens,
-                repetition_penalty
-            )
-        
-        # Apply temperature
-        if temperature != 1.0:
-            next_token_logits = next_token_logits / temperature
-        
-        # Apply top-k filtering
-        if top_k > 0:
-            next_token_logits = self._top_k_filtering(
-                next_token_logits,
-                top_k
-            )
-        
-        # Apply top-p (nucleus) filtering
-        if top_p < 1.0:
-            next_token_logits = self._top_p_filtering(
-                next_token_logits,
-                top_p
-            )
-        
-        # Convert to probabilities
-        probs = tf.nn.softmax(next_token_logits)
-        
-        # Sample next token
-        next_token = tf.random.categorical(
-            tf.math.log(probs)[None, :],
-            num_samples=1
-        )[0, 0].numpy()
-        
-        return int(next_token)
+        with torch.no_grad():
+            outputs = self.model(input_tensor)
+            
+            # Get logits for next token
+            next_token_logits = outputs[0, -1, :]
+            
+            # Apply repetition penalty
+            if repetition_penalty != 1.0:
+                next_token_logits = self._apply_repetition_penalty(
+                    next_token_logits,
+                    current_tokens,
+                    repetition_penalty
+                )
+            
+            # Apply temperature
+            if temperature != 1.0:
+                next_token_logits = next_token_logits / temperature
+            
+            # Apply top-k filtering
+            if top_k > 0:
+                next_token_logits = self._top_k_filtering(
+                    next_token_logits,
+                    top_k
+                )
+            
+            # Apply top-p (nucleus) filtering
+            if top_p < 1.0:
+                next_token_logits = self._top_p_filtering(
+                    next_token_logits,
+                    top_p
+                )
+            
+            # Convert to probabilities
+            probs = F.softmax(next_token_logits, dim=-1)
+            
+            # Sample next token
+            next_token = torch.multinomial(probs, num_samples=1).item()
+            
+            return next_token
     
     def _apply_repetition_penalty(
         self,
-        logits: tf.Tensor,
+        logits: torch.Tensor,
         tokens: List[int],
         penalty: float
-    ) -> tf.Tensor:
+    ) -> torch.Tensor:
         """Apply repetition penalty to logits"""
+        logits = logits.clone()
+        
         # Count token frequencies
         token_counts = {}
         for token in tokens:
@@ -143,79 +148,62 @@ class MusicGenerator:
         
         # Apply penalty
         for token, count in token_counts.items():
-            if count > 0:
-                logits = tf.tensor_scatter_nd_update(
-                    logits,
-                    [[token]],
-                    [logits[token] / (penalty * count)]
-                )
+            if count > 0 and 0 <= token < len(logits):
+                logits[token] = logits[token] / (penalty * count)
         
         return logits
     
     def _top_k_filtering(
         self,
-        logits: tf.Tensor,
+        logits: torch.Tensor,
         k: int
-    ) -> tf.Tensor:
+    ) -> torch.Tensor:
         """Apply top-k filtering to logits"""
-        top_k_logits, top_k_indices = tf.math.top_k(logits, k=k)
-        indices_to_remove = logits < tf.math.reduce_min(top_k_logits)
-        logits = tf.where(indices_to_remove, tf.float32.min, logits)
+        if k <= 0:
+            return logits
+            
+        top_k_logits, top_k_indices = torch.topk(logits, k=min(k, logits.size(-1)))
+        indices_to_remove = logits < top_k_logits[..., -1, None]
+        logits = logits.masked_fill(indices_to_remove, float('-inf'))
         return logits
     
     def _top_p_filtering(
         self,
-        logits: tf.Tensor,
+        logits: torch.Tensor,
         p: float
-    ) -> tf.Tensor:
+    ) -> torch.Tensor:
         """Apply nucleus (top-p) filtering to logits"""
-        sorted_logits, sorted_indices = tf.math.top_k(
-            logits,
-            k=tf.shape(logits)[-1]
-        )
-        cumulative_probs = tf.math.cumsum(
-            tf.nn.softmax(sorted_logits),
-            axis=-1
-        )
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
         
         # Remove tokens with cumulative probability above the threshold
         sorted_indices_to_remove = cumulative_probs > p
         
-        # Keep tokens with cumulative probability less than p
-        sorted_indices_to_remove = tf.concat(
-            [
-                tf.zeros_like(sorted_indices_to_remove[:1], dtype=bool),
-                sorted_indices_to_remove[1:]
-            ],
-            axis=0
-        )
+        # Keep at least one token
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
         
         # Scatter back to original indices
-        indices_to_remove = tf.scatter_nd(
-            tf.expand_dims(sorted_indices, 1),
-            sorted_indices_to_remove,
-            tf.shape(sorted_indices_to_remove)
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            dim=-1, index=sorted_indices, src=sorted_indices_to_remove
         )
         
-        logits = tf.where(indices_to_remove, tf.float32.min, logits)
+        logits = logits.masked_fill(indices_to_remove, float('-inf'))
         return logits
 
 class StructuredMusicGenerator(MusicGenerator):
-    """Extended generator with structure-aware generation"""
+    """Extended generator with structured composition capabilities"""
     
     def __init__(
         self,
-        model: tf.keras.Model,
+        model: torch.nn.Module,
         tokenizer: EventTokenizer,
         config: GenerationConfig,
-        structure_config: Optional[Dict] = None
+        structure_config: Optional[Dict] = None,
+        device: Optional[torch.device] = None
     ):
-        super().__init__(model, tokenizer, config)
-        self.structure_config = structure_config or {
-            'sections': ['A', 'B', 'A'],  # Default song structure
-            'section_length': 16,  # Bars per section
-            'time_signature': (4, 4)
-        }
+        super().__init__(model, tokenizer, config, device)
+        self.structure_config = structure_config or {}
     
     def generate_structured(
         self,
@@ -223,27 +211,51 @@ class StructuredMusicGenerator(MusicGenerator):
         chord_progression: Optional[List[str]] = None,
         **kwargs
     ) -> List[MusicEvent]:
-        """Generate music following a specific structure"""
-        generated_sections = []
+        """Generate music with structural constraints"""
+        # Define musical form
+        form = self.structure_config.get('form', 'AABA')
+        section_length = self.structure_config.get('section_length', 8)
         
-        for section in self.structure_config['sections']:
-            # Generate section-specific conditions
-            conditions = self._create_section_conditions(
-                section,
-                style_id,
-                chord_progression
+        all_events = []
+        
+        # Generate each section
+        for i, section in enumerate(form):
+            section_conditions = self._create_section_conditions(
+                section, style_id, chord_progression
             )
             
             # Generate section
-            section_events = self.generate(
-                conditions=conditions,
-                max_length=self._calculate_section_length(),
-                **kwargs
-            )
+            if i == 0:
+                # First section - start from beginning
+                section_events = self.generate(
+                    conditions=section_conditions,
+                    max_length=self._calculate_section_length(),
+                    **kwargs
+                )
+            else:
+                # Subsequent sections - use some previous material as seed
+                if section in [s for s in form[:i]]:
+                    # Repeat/vary previous section
+                    previous_idx = form[:i].index(section)
+                    seed_length = min(16, len(all_events) // len(form))
+                    start_idx = previous_idx * (len(all_events) // len(form))
+                    seed_events = all_events[start_idx:start_idx + seed_length]
+                else:
+                    # New section - use transition from previous
+                    seed_events = all_events[-8:] if all_events else None
+                
+                section_events = self.generate(
+                    seed_events=seed_events,
+                    conditions=section_conditions,
+                    max_length=self._calculate_section_length(),
+                    **kwargs
+                )
             
-            generated_sections.extend(section_events)
+            all_events.extend(section_events)
         
-        return self._post_process_structure(generated_sections)
+        # Post-process for musical coherence
+        final_events = self._post_process_structure(all_events)
+        return final_events
     
     def _create_section_conditions(
         self,
@@ -251,70 +263,54 @@ class StructuredMusicGenerator(MusicGenerator):
         style_id: Optional[int],
         chord_progression: Optional[List[str]]
     ) -> Dict:
-        """Create conditions for a specific section"""
-        conditions = {
-            'section': section,
-            'style_id': style_id
-        }
+        """Create conditioning information for a musical section"""
+        conditions = {}
+        
+        if style_id is not None:
+            conditions['style'] = style_id
         
         if chord_progression:
-            # Map chord progression to section
-            section_chords = self._map_chords_to_section(
-                chord_progression,
-                section
-            )
-            conditions['chord_progression'] = section_chords
+            # Map chord progression to this section
+            section_chords = self._map_chords_to_section(chord_progression, section)
+            conditions['chords'] = section_chords
+        
+        # Section-specific characteristics
+        if section == 'A':
+            conditions['energy'] = 'medium'
+        elif section == 'B':
+            conditions['energy'] = 'high'
         
         return conditions
     
     def _calculate_section_length(self) -> int:
-        """Calculate target length for a section"""
-        bars = self.structure_config['section_length']
-        beats_per_bar = self.structure_config['time_signature'][0]
-        return bars * beats_per_bar * 4  # Assuming 16th note resolution
+        """Calculate appropriate length for a section"""
+        base_length = self.structure_config.get('section_length', 64)
+        return base_length
     
     def _map_chords_to_section(
         self,
         chord_progression: List[str],
         section: str
     ) -> List[str]:
-        """Map chord progression to specific section"""
-        # Implement chord progression mapping logic
-        # This could involve repeating, transposing, or varying the progression
-        return chord_progression
+        """Map chord progression to a specific section"""
+        # Simple mapping - could be more sophisticated
+        return chord_progression[:4]  # Use first 4 chords
     
     def _post_process_structure(
         self,
         events: List[MusicEvent]
     ) -> List[MusicEvent]:
-        """Post-process generated events to ensure structural coherence"""
-        # Add section markers
+        """Apply post-processing for better musical structure"""
+        # Simple post-processing - could add more sophisticated rules
         processed_events = []
-        current_time = 0.0
         
-        for section_idx, section in enumerate(self.structure_config['sections']):
-            section_start = current_time
-            section_end = section_start + (
-                self.structure_config['section_length'] * 
-                self.structure_config['time_signature'][0]
-            )
-            
-            # Filter events for this section
-            section_events = [
-                event for event in events
-                if section_start <= event.time < section_end
-            ]
-            
-            # Add section metadata
-            section_marker = MusicEvent(
-                type='marker',
-                time=section_start,
-                key=f'Section_{section}'
-            )
-            processed_events.append(section_marker)
-            
-            # Add section events
-            processed_events.extend(section_events)
-            current_time = section_end
+        for event in events:
+            # Basic filtering and cleanup
+            if event.type == 'note' and event.pitch is not None:
+                # Ensure notes are in reasonable range
+                if 21 <= event.pitch <= 108:  # Piano range
+                    processed_events.append(event)
+            else:
+                processed_events.append(event)
         
         return processed_events

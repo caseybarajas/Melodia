@@ -27,113 +27,309 @@ class MelodiaDataset(Dataset):
         return self.inputs[idx], self.targets[idx]
 
 class EventTokenizer:
-    """Converts musical events to and from tokens"""
-    
-    # Special tokens
-    PAD_TOKEN = 0
-    BOS_TOKEN = 1
-    EOS_TOKEN = 2
-    UNK_TOKEN = 3
-    
-    # Token type ranges (compact layout)
-    NOTE_START = 4
-    VELOCITY_START = 132  # 4 + 128
-    DURATION_START = 164  # 132 + 32
-    TEMPO_START = 176     # 164 + 12
-    TIME_SIG_START = 184  # 176 + 8
-    KEY_SIG_START = 189   # 184 + 5
+    """Enhanced tokenizer with better musical representation"""
     
     def __init__(self, config: DataConfig):
         self.config = config
+        self.vocab = {}
+        self.reverse_vocab = {}
+        self._build_vocabulary()
         
-        # Initialize vocabulary
-        self.token_to_event = {
-            self.PAD_TOKEN: '<pad>',
-            self.BOS_TOKEN: '<bos>',
-            self.EOS_TOKEN: '<eos>',
-            self.UNK_TOKEN: '<unk>'
-        }
-        self.event_to_token = {v: k for k, v in self.token_to_event.items()}
+    def _build_vocabulary(self):
+        """Build a comprehensive musical vocabulary"""
+        vocab_id = 0
         
-        # Initialize mappings
-        self._init_note_tokens()
-        self._init_velocity_tokens()
-        self._init_duration_tokens()
-        self._init_tempo_tokens()
-        self._init_time_sig_tokens()
-        self._init_key_sig_tokens()
+        # Special tokens
+        special_tokens = ['<PAD>', '<BOS>', '<EOS>', '<UNK>']
+        for token in special_tokens:
+            self.vocab[token] = vocab_id
+            self.reverse_vocab[vocab_id] = token
+            vocab_id += 1
         
-        self.vocab_size = len(self.token_to_event)
+        # Note events (pitch + velocity + duration as single tokens for better context)
+        for pitch in range(128):
+            for vel_bucket in range(8):  # 8 velocity buckets (0-15, 16-31, ..., 112-127)
+                for dur_bucket in range(12):  # 12 duration buckets
+                    token = f'NOTE_{pitch}_{vel_bucket}_{dur_bucket}'
+                    self.vocab[token] = vocab_id
+                    self.reverse_vocab[vocab_id] = token
+                    vocab_id += 1
+        
+        # Rest/silence tokens with duration
+        for dur_bucket in range(12):
+            token = f'REST_{dur_bucket}'
+            self.vocab[token] = vocab_id
+            self.reverse_vocab[vocab_id] = token
+            vocab_id += 1
+        
+        # Chord tokens (root + type)
+        chord_types = ['maj', 'min', 'dim', 'aug', '7', 'maj7', 'min7', 'dim7']
+        for root in range(12):
+            for chord_type in chord_types:
+                token = f'CHORD_{root}_{chord_type}'
+                self.vocab[token] = vocab_id
+                self.reverse_vocab[vocab_id] = token
+                vocab_id += 1
+        
+        # Time signature tokens
+        for num, den in [(4, 4), (3, 4), (2, 4), (6, 8), (9, 8), (12, 8)]:
+            token = f'TIME_SIG_{num}_{den}'
+            self.vocab[token] = vocab_id
+            self.reverse_vocab[vocab_id] = token
+            vocab_id += 1
+        
+        # Key signature tokens
+        keys = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+        for key in keys:
+            for mode in ['maj', 'min']:
+                token = f'KEY_{key}_{mode}'
+                self.vocab[token] = vocab_id
+                self.reverse_vocab[vocab_id] = token
+                vocab_id += 1
+        
+        # Tempo tokens (in ranges)
+        tempo_ranges = ['slow', 'medium', 'fast', 'very_fast']
+        for tempo in tempo_ranges:
+            token = f'TEMPO_{tempo}'
+            self.vocab[token] = vocab_id
+            self.reverse_vocab[vocab_id] = token
+            vocab_id += 1
+        
+        # Musical structure tokens
+        structure_tokens = ['PHRASE_START', 'PHRASE_END', 'SECTION_START', 'SECTION_END']
+        for token in structure_tokens:
+            self.vocab[token] = vocab_id
+            self.reverse_vocab[vocab_id] = token
+            vocab_id += 1
+        
+        self.vocab_size = len(self.vocab)
+        
+        # Create convenience mappings
+        self.pad_token = self.vocab['<PAD>']
+        self.bos_token = self.vocab['<BOS>']
+        self.eos_token = self.vocab['<EOS>']
+        self.unk_token = self.vocab['<UNK>']
+        
+        # Compatibility with generator (uppercase attributes)
+        self.PAD_TOKEN = self.pad_token
+        self.BOS_TOKEN = self.bos_token
+        self.EOS_TOKEN = self.eos_token
+        self.UNK_TOKEN = self.unk_token
     
-    def _init_note_tokens(self):
-        """Initialize MIDI note tokens (0-127)"""
-        for note in range(128):
-            token = self.NOTE_START + note
-            self.token_to_event[token] = f'NOTE_{note}'
-            self.event_to_token[f'NOTE_{note}'] = token
+    def _get_velocity_bucket(self, velocity: int) -> int:
+        """Convert velocity to bucket (0-7)"""
+        return min(7, max(0, velocity // 16))
     
-    def _init_velocity_tokens(self):
-        """Initialize velocity tokens (quantized to 32 levels)"""
-        for vel in range(0, 128, 4):
-            token = self.VELOCITY_START + (vel // 4)
-            self.token_to_event[token] = f'VEL_{vel}'
-            self.event_to_token[f'VEL_{vel}'] = token
+    def _get_duration_bucket(self, duration: float) -> int:
+        """Convert duration to bucket (0-11)"""
+        # Duration buckets: 0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0+
+        duration_thresholds = [0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+        for i, threshold in enumerate(duration_thresholds):
+            if duration <= threshold:
+                return i
+        return len(duration_thresholds) - 1
     
-    def _init_duration_tokens(self):
-        """Initialize duration tokens (quantized logarithmically)"""
-        durations = [
-            0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 
-            1.5, 2.0, 3.0, 4.0, 6.0, 8.0
-        ]
-        for i, dur in enumerate(durations):
-            token = self.DURATION_START + i
-            self.token_to_event[token] = f'DUR_{dur}'
-            self.event_to_token[f'DUR_{dur}'] = token
+    def _detect_chord_type(self, pitches: List[int]) -> str:
+        """Detect chord type from pitches"""
+        if len(pitches) < 2:
+            return 'maj'  # Default
+        
+        # Sort and get intervals
+        sorted_pitches = sorted(pitches)
+        intervals = [(sorted_pitches[i] - sorted_pitches[0]) % 12 for i in range(len(sorted_pitches))]
+        intervals = sorted(set(intervals))
+        
+        # Basic chord detection
+        if intervals == [0, 3, 6]:
+            return 'dim'
+        elif intervals == [0, 4, 8]:
+            return 'aug'
+        elif 3 in intervals and 7 in intervals:
+            return 'min'
+        elif 4 in intervals and 7 in intervals:
+            return 'maj'
+        elif 10 in intervals:
+            return '7'
+        else:
+            return 'maj'  # Default
     
-    def _init_tempo_tokens(self):
-        """Initialize tempo tokens (quantized to ranges)"""
-        tempo_ranges = [
-            (20, 40), (40, 60), (60, 80), (80, 100),
-            (100, 120), (120, 140), (140, 160), (160, 200)
-        ]
-        for i, (low, high) in enumerate(tempo_ranges):
-            token = self.TEMPO_START + i
-            self.token_to_event[token] = f'TEMPO_{low}_{high}'
-            self.event_to_token[f'TEMPO_{low}_{high}'] = token
+    def encode_events(self, events: List[MusicEvent]) -> List[int]:
+        """Convert musical events to tokens with improved structure"""
+        tokens = [self.bos_token]
+        
+        # Sort events by time
+        sorted_events = sorted(events, key=lambda x: x.time)
+        
+        # Group events by time to handle simultaneity
+        time_groups = defaultdict(list)
+        for event in sorted_events:
+            quantized_time = round(event.time * 8) / 8  # Quantize to 32nd notes
+            time_groups[quantized_time].append(event)
+        
+        # Process events in temporal order
+        last_time = 0.0
+        phrase_length = 0
+        
+        for time_point in sorted(time_groups.keys()):
+            # Add rest if there's a gap
+            if time_point > last_time:
+                rest_duration = time_point - last_time
+                dur_bucket = self._get_duration_bucket(rest_duration)
+                rest_token = f'REST_{dur_bucket}'
+                if rest_token in self.vocab:
+                    tokens.append(self.vocab[rest_token])
+            
+            # Process simultaneous events
+            group = time_groups[time_point]
+            
+            # Separate notes and chords
+            notes = [e for e in group if e.type == 'note']
+            chords = [e for e in group if e.type == 'chord']
+            other = [e for e in group if e.type not in ['note', 'chord']]
+            
+            # Add chord tokens first
+            for chord_event in chords:
+                if isinstance(chord_event.pitch, list) and len(chord_event.pitch) > 1:
+                    root = chord_event.pitch[0] % 12
+                    chord_type = self._detect_chord_type(chord_event.pitch)
+                    chord_token = f'CHORD_{root}_{chord_type}'
+                    if chord_token in self.vocab:
+                        tokens.append(self.vocab[chord_token])
+            
+            # Add note tokens
+            for note_event in notes:
+                if note_event.pitch is not None and 0 <= note_event.pitch <= 127:
+                    vel_bucket = self._get_velocity_bucket(note_event.velocity or 64)
+                    dur_bucket = self._get_duration_bucket(note_event.duration or 1.0)
+                    note_token = f'NOTE_{note_event.pitch}_{vel_bucket}_{dur_bucket}'
+                    if note_token in self.vocab:
+                        tokens.append(self.vocab[note_token])
+            
+            # Add structural tokens
+            phrase_length += 1
+            if phrase_length >= 16:  # Start new phrase every 16 events
+                tokens.append(self.vocab['PHRASE_END'])
+                tokens.append(self.vocab['PHRASE_START'])
+                phrase_length = 0
+            
+            # Add other events (tempo, key, etc.)
+            for event in other:
+                if event.type == 'tempo' and event.tempo is not None:
+                    if event.tempo < 80:
+                        tempo_token = 'TEMPO_slow'
+                    elif event.tempo < 120:
+                        tempo_token = 'TEMPO_medium'
+                    elif event.tempo < 160:
+                        tempo_token = 'TEMPO_fast'
+                    else:
+                        tempo_token = 'TEMPO_very_fast'
+                    
+                    if tempo_token in self.vocab:
+                        tokens.append(self.vocab[tempo_token])
+                
+                elif event.type == 'time_sig':
+                    time_sig_token = f'TIME_SIG_{event.numerator}_{event.denominator}'
+                    if time_sig_token in self.vocab:
+                        tokens.append(self.vocab[time_sig_token])
+            
+            last_time = time_point
+        
+        tokens.append(self.eos_token)
+        return tokens
     
-    def _init_time_sig_tokens(self):
-        """Initialize time signature tokens"""
-        for i, (num, den) in enumerate(self.config.valid_time_signatures):
-            token = self.TIME_SIG_START + i
-            self.token_to_event[token] = f'TIME_{num}_{den}'
-            self.event_to_token[f'TIME_{num}_{den}'] = token
+    def decode_tokens(self, tokens: List[int]) -> List[MusicEvent]:
+        """Convert tokens back to musical events"""
+        events = []
+        current_time = 0.0
+        
+        for token in tokens:
+            if token in [self.pad_token, self.bos_token, self.eos_token]:
+                continue
+            
+            token_str = self.reverse_vocab.get(token, '<UNK>')
+            
+            if token_str.startswith('NOTE_'):
+                # Parse note token: NOTE_pitch_vel_dur
+                parts = token_str.split('_')
+                if len(parts) == 4:
+                    pitch = int(parts[1])
+                    vel_bucket = int(parts[2])
+                    dur_bucket = int(parts[3])
+                    
+                    velocity = vel_bucket * 16 + 8  # Convert back from bucket
+                    durations = [0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+                    duration = durations[min(dur_bucket, len(durations) - 1)]
+                    
+                    events.append(MusicEvent(
+                        type='note',
+                        time=current_time,
+                        pitch=pitch,
+                        velocity=velocity,
+                        duration=duration
+                    ))
+            
+            elif token_str.startswith('REST_'):
+                # Parse rest token
+                parts = token_str.split('_')
+                if len(parts) == 2:
+                    dur_bucket = int(parts[1])
+                    durations = [0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+                    duration = durations[min(dur_bucket, len(durations) - 1)]
+                    current_time += duration
+            
+            elif token_str.startswith('CHORD_'):
+                # Parse chord token
+                parts = token_str.split('_')
+                if len(parts) == 3:
+                    root = int(parts[1]) + 60  # Middle C octave
+                    chord_type = parts[2]
+                    
+                    # Generate chord pitches
+                    if chord_type == 'maj':
+                        pitches = [root, root + 4, root + 7]
+                    elif chord_type == 'min':
+                        pitches = [root, root + 3, root + 7]
+                    elif chord_type == 'dim':
+                        pitches = [root, root + 3, root + 6]
+                    elif chord_type == 'aug':
+                        pitches = [root, root + 4, root + 8]
+                    else:
+                        pitches = [root, root + 4, root + 7]  # Default to major
+                    
+                    events.append(MusicEvent(
+                        type='chord',
+                        time=current_time,
+                        pitch=pitches,
+                        velocity=64,
+                        duration=1.0
+                    ))
+            
+            elif token_str.startswith('TEMPO_'):
+                tempo_map = {
+                    'TEMPO_slow': 70,
+                    'TEMPO_medium': 100,
+                    'TEMPO_fast': 140,
+                    'TEMPO_very_fast': 180
+                }
+                tempo = tempo_map.get(token_str, 120)
+                events.append(MusicEvent(
+                    type='tempo',
+                    time=current_time,
+                    tempo=tempo
+                ))
+        
+        return events
     
-    def _init_key_sig_tokens(self):
-        """Initialize key signature tokens"""
-        keys = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#',
-               'F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb', 'Cb']
-        for i, key_name in enumerate(keys):
-            for mode in ['major', 'minor']:
-                token = self.KEY_SIG_START + (i * 2) + (0 if mode == 'major' else 1)
-                key_str = f'{key_name}_{mode}'
-                self.token_to_event[token] = f'KEY_{key_str}'
-                self.event_to_token[f'KEY_{key_str}'] = token
-
     def save_vocabulary(self, path: Union[str, Path]):
-        """Save tokenizer vocabulary to file"""
+        """Save vocabulary to file"""
         vocab_data = {
-            'token_to_event': self.token_to_event,
-            'vocab_size': self.vocab_size,
-            'special_tokens': {
-                'PAD_TOKEN': self.PAD_TOKEN,
-                'BOS_TOKEN': self.BOS_TOKEN,
-                'EOS_TOKEN': self.EOS_TOKEN,
-                'UNK_TOKEN': self.UNK_TOKEN
-            }
+            'vocab': self.vocab,
+            'reverse_vocab': {str(k): v for k, v in self.reverse_vocab.items()},
+            'vocab_size': self.vocab_size
         }
         with open(path, 'w') as f:
             json.dump(vocab_data, f, indent=2)
-
+    
     @classmethod
     def load_vocabulary(cls, path: Union[str, Path], config: DataConfig) -> 'EventTokenizer':
         """Load tokenizer vocabulary from file"""
@@ -141,106 +337,26 @@ class EventTokenizer:
             vocab_data = json.load(f)
         
         tokenizer = cls(config)
-        tokenizer.token_to_event = {int(k): v for k, v in vocab_data['token_to_event'].items()}
-        tokenizer.event_to_token = {v: int(k) for k, v in tokenizer.token_to_event.items()}
+        tokenizer.vocab = vocab_data['vocab']
+        tokenizer.reverse_vocab = {int(k): v for k, v in vocab_data['reverse_vocab'].items()}
         tokenizer.vocab_size = vocab_data['vocab_size']
+        
+        # Re-create convenience mappings after loading
+        tokenizer.pad_token = tokenizer.vocab['<PAD>']
+        tokenizer.bos_token = tokenizer.vocab['<BOS>']
+        tokenizer.eos_token = tokenizer.vocab['<EOS>']
+        tokenizer.unk_token = tokenizer.vocab['<UNK>']
+        
+        # Compatibility with generator (uppercase attributes)
+        tokenizer.PAD_TOKEN = tokenizer.pad_token
+        tokenizer.BOS_TOKEN = tokenizer.bos_token
+        tokenizer.EOS_TOKEN = tokenizer.eos_token
+        tokenizer.UNK_TOKEN = tokenizer.unk_token
+        
         return tokenizer
 
-    def encode_events(self, events: List[MusicEvent]) -> List[int]:
-        """Convert a sequence of musical events to tokens"""
-        tokens = [self.BOS_TOKEN]
-        
-        for event in events:
-            if event.type == 'note' and event.pitch is not None:
-                # Note token
-                note_token = self.NOTE_START + event.pitch
-                tokens.append(note_token)
-                
-                # Velocity token (quantized)
-                if event.velocity is not None:
-                    vel_quantized = min(31, max(0, event.velocity // 4))
-                    vel_token = self.VELOCITY_START + vel_quantized
-                    tokens.append(vel_token)
-                
-                # Duration token (find closest match)
-                if event.duration is not None:
-                    durations = [0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
-                    closest_dur_idx = min(range(len(durations)), 
-                                        key=lambda i: abs(durations[i] - event.duration))
-                    dur_token = self.DURATION_START + closest_dur_idx
-                    tokens.append(dur_token)
-            
-            elif event.type == 'tempo' and event.tempo is not None:
-                # Tempo token (find appropriate range)
-                tempo_ranges = [(20, 40), (40, 60), (60, 80), (80, 100),
-                              (100, 120), (120, 140), (140, 160), (160, 200)]
-                for i, (low, high) in enumerate(tempo_ranges):
-                    if low <= event.tempo < high:
-                        tempo_token = self.TEMPO_START + i
-                        tokens.append(tempo_token)
-                        break
-            
-            elif event.type == 'time_sig' and event.numerator is not None and event.denominator is not None:
-                # Time signature token
-                for i, (num, den) in enumerate(self.config.valid_time_signatures):
-                    if num == event.numerator and den == event.denominator:
-                        time_sig_token = self.TIME_SIG_START + i
-                        tokens.append(time_sig_token)
-                        break
-        
-        tokens.append(self.EOS_TOKEN)
-        return tokens
-    
-    def decode_tokens(self, tokens: List[int]) -> List[MusicEvent]:
-        """Convert a sequence of tokens back to musical events"""
-        events = []
-        current_note = None
-        current_velocity = None
-        current_duration = None
-        
-        for token in tokens:
-            if token in [self.PAD_TOKEN, self.BOS_TOKEN, self.EOS_TOKEN]:
-                continue
-            
-            if token >= self.NOTE_START and token < self.NOTE_START + 128:
-                # Complete previous note if any
-                if current_note is not None:
-                    events.append(MusicEvent(
-                        type='note',
-                        time=0.0,  # Time will be adjusted later
-                        pitch=current_note,
-                        velocity=current_velocity or 64,
-                        duration=current_duration or 1.0
-                    ))
-                
-                # Start new note
-                current_note = token - self.NOTE_START
-                current_velocity = None
-                current_duration = None
-            
-            elif token >= self.VELOCITY_START and token < self.VELOCITY_START + 32:
-                current_velocity = (token - self.VELOCITY_START) * 4
-            
-            elif token >= self.DURATION_START and token < self.DURATION_START + 12:
-                durations = [0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
-                dur_idx = token - self.DURATION_START
-                if dur_idx < len(durations):
-                    current_duration = durations[dur_idx]
-        
-        # Complete final note if any
-        if current_note is not None:
-            events.append(MusicEvent(
-                type='note',
-                time=0.0,
-                pitch=current_note,
-                velocity=current_velocity or 64,
-                duration=current_duration or 1.0
-            ))
-        
-        return events
-
 class DataProcessor:
-    """Handles data processing, augmentation, and batching for training"""
+    """Enhanced data processor with better musical understanding"""
     
     def __init__(self, config: DataConfig):
         self.config = config
@@ -251,33 +367,73 @@ class DataProcessor:
         events_list: List[List[MusicEvent]],
         augment: bool = True
     ) -> List[List[MusicEvent]]:
-        """Process and optionally augment event sequences"""
+        """Process and augment event sequences with better musical structure"""
         processed_events = []
         
         for events in events_list:
+            # Filter and clean events
+            cleaned = self._clean_events(events)
+            if len(cleaned) < 10:  # Skip very short sequences
+                continue
+                
             # Basic processing
-            processed = self._process_single_sequence(events)
+            processed = self._process_single_sequence(cleaned)
             processed_events.append(processed)
             
             if augment:
-                # Transposition augmentation
-                for semitones in [-2, -1, 1, 2]:
+                # Musical transposition (within reasonable ranges)
+                for semitones in [-5, -3, -2, -1, 1, 2, 3, 5]:
                     transposed = self._transpose_sequence(processed, semitones)
-                    processed_events.append(transposed)
+                    if transposed:  # Only add if transposition was successful
+                        processed_events.append(transposed)
                 
-                # Tempo augmentation
-                for tempo_factor in [0.9, 1.1]:
-                    tempo_varied = self._vary_tempo(processed, tempo_factor)
+                # Rhythm variations
+                for factor in [0.75, 0.9, 1.1, 1.25]:
+                    tempo_varied = self._vary_tempo(processed, factor)
                     processed_events.append(tempo_varied)
+                
+                # Dynamics variations
+                for vel_factor in [0.7, 0.85, 1.15, 1.3]:
+                    dynamics_varied = self._vary_dynamics(processed, vel_factor)
+                    processed_events.append(dynamics_varied)
         
+        print(f"Processed {len(events_list)} original sequences into {len(processed_events)} training sequences")
         return processed_events
-
+    
+    def _clean_events(self, events: List[MusicEvent]) -> List[MusicEvent]:
+        """Clean and filter events"""
+        cleaned = []
+        
+        for event in events:
+            # Filter out invalid events
+            if event.type == 'note':
+                if (event.pitch is not None and 
+                    0 <= event.pitch <= 127 and 
+                    event.duration is not None and 
+                    0.0625 <= event.duration <= 8.0):  # Reasonable duration range
+                    cleaned.append(event)
+            elif event.type == 'chord':
+                if (isinstance(event.pitch, list) and 
+                    len(event.pitch) >= 2 and 
+                    all(0 <= p <= 127 for p in event.pitch)):
+                    cleaned.append(event)
+            else:
+                cleaned.append(event)
+        
+        return cleaned
+    
     def _process_single_sequence(self, events: List[MusicEvent]) -> List[MusicEvent]:
-        """Process a single sequence of events"""
+        """Process a single sequence with better timing"""
         # Sort by time
         events = sorted(events, key=lambda x: x.time)
         
-        # Quantize times and durations
+        # Normalize time to start at 0
+        if events:
+            start_time = events[0].time
+            for event in events:
+                event.time -= start_time
+        
+        # Quantize to musical grid (32nd notes)
         quantized = []
         for event in events:
             event_copy = MusicEvent(
@@ -285,23 +441,30 @@ class DataProcessor:
                 time=self._quantize_time(event.time),
                 duration=self._quantize_time(event.duration) if event.duration else None,
                 pitch=event.pitch,
-                velocity=event.velocity if event.velocity else None,
-                tempo=event.tempo if event.tempo else None,
-                numerator=event.numerator if event.numerator else None,
-                denominator=event.denominator if event.denominator else None,
-                key=event.key if event.key else None
+                velocity=self._quantize_velocity(event.velocity) if event.velocity else None,
+                tempo=event.tempo,
+                numerator=event.numerator,
+                denominator=event.denominator,
+                key=event.key
             )
             quantized.append(event_copy)
         
         return quantized
-
+    
     def _quantize_time(self, time: Optional[float]) -> Optional[float]:
-        """Quantize time values to the nearest subdivision"""
+        """Quantize time to musical grid (32nd notes)"""
         if time is None:
             return None
-        
         subdivision = 0.125  # 32nd note
         return round(time / subdivision) * subdivision
+    
+    def _quantize_velocity(self, velocity: Optional[int]) -> Optional[int]:
+        """Quantize velocity to reasonable ranges"""
+        if velocity is None:
+            return None
+        # Ensure velocity is in valid MIDI range and somewhat musical
+        velocity = max(20, min(127, velocity))  # Avoid too quiet notes
+        return velocity
 
     def prepare_dataset(
         self,
@@ -309,56 +472,66 @@ class DataProcessor:
         batch_size: int = 32,
         shuffle: bool = True
     ) -> DataLoader:
-        """Prepare a TensorFlow dataset for training"""
-        # Convert events to sequences
+        """Prepare dataset with better sequence handling"""
+        # Convert events to token sequences
         sequences = []
+        
         for events in events_list:
             tokens = self.tokenizer.encode_events(events)
             
-            # If sequence is too long, break it into chunks
             if len(tokens) > self.config.max_sequence_length:
-                chunk_size = self.config.max_sequence_length - 1  # Leave room for overlap
-                for i in range(0, len(tokens) - self.config.min_sequence_length, chunk_size):
-                    chunk = tokens[i:i + self.config.max_sequence_length]
+                # Create overlapping windows for better continuity
+                window_size = self.config.max_sequence_length
+                step_size = window_size // 3  # 2/3 overlap
+                
+                for i in range(0, len(tokens) - self.config.min_sequence_length, step_size):
+                    chunk = tokens[i:i + window_size]
                     if len(chunk) >= self.config.min_sequence_length:
                         sequences.append(chunk)
             elif len(tokens) >= self.config.min_sequence_length:
                 sequences.append(tokens)
+        
+        print(f"Created {len(sequences)} training sequences")
         
         # Create input/target pairs
         inputs = []
         targets = []
         
         for sequence in sequences:
-            # Create sliding windows
-            for i in range(0, len(sequence) - self.config.min_sequence_length):
-                end = min(i + self.config.max_sequence_length, len(sequence))
+            # Ensure sequence has BOS/EOS tokens
+            if sequence[0] != self.tokenizer.bos_token:
+                sequence = [self.tokenizer.bos_token] + sequence
+            if sequence[-1] != self.tokenizer.eos_token:
+                sequence = sequence + [self.tokenizer.eos_token]
+            
+            # Create training examples with next-token prediction
+            max_len = min(len(sequence), self.config.max_sequence_length)
+            if max_len >= self.config.min_sequence_length:
+                input_seq = sequence[:max_len-1]
+                target_seq = sequence[1:max_len]
                 
-                input_seq = sequence[i:end-1]
-                target_seq = sequence[i+1:end]
-                
-                # Pad sequences if necessary
-                if len(input_seq) < self.config.max_sequence_length:
-                    pad_length = self.config.max_sequence_length - len(input_seq)
-                    input_seq = input_seq + [self.tokenizer.PAD_TOKEN] * pad_length
-                    target_seq = target_seq + [self.tokenizer.PAD_TOKEN] * pad_length
+                # Pad to fixed length
+                pad_length = self.config.max_sequence_length - 1 - len(input_seq)
+                if pad_length > 0:
+                    input_seq = input_seq + [self.tokenizer.pad_token] * pad_length
+                    target_seq = target_seq + [self.tokenizer.pad_token] * pad_length
                 
                 inputs.append(input_seq)
                 targets.append(target_seq)
         
-        # Convert to numpy arrays
-        inputs = np.array(inputs, dtype=np.int64)  # PyTorch prefers int64
+        print(f"Generated {len(inputs)} training examples")
+        
+        # Convert to arrays
+        inputs = np.array(inputs, dtype=np.int64)
         targets = np.array(targets, dtype=np.int64)
         
-        # Create PyTorch dataset
+        # Create dataset and dataloader
         dataset = MelodiaDataset(inputs, targets)
-        
-        # Create DataLoader
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=shuffle,
-            num_workers=0,  # Set to 0 for Windows compatibility
+            num_workers=0,
             pin_memory=torch.cuda.is_available()
         )
         
@@ -369,7 +542,7 @@ class DataProcessor:
         events: List[MusicEvent],
         semitones: int
     ) -> List[MusicEvent]:
-        """Transpose a sequence by a number of semitones"""
+        """Transpose sequence with validation"""
         transposed = []
         
         for event in events:
@@ -385,37 +558,35 @@ class DataProcessor:
                 key=event.key
             )
             
-            # Transpose pitch if present
-            if event.type == 'note':
-                if isinstance(event.pitch, int):
-                    new_pitch = event.pitch + semitones
-                    if 0 <= new_pitch <= 127:
-                        event_copy.pitch = new_pitch
-                        transposed.append(event_copy)
-                elif isinstance(event.pitch, list):
-                    new_pitches = [p + semitones for p in event.pitch]
-                    if all(0 <= p <= 127 for p in new_pitches):
-                        event_copy.pitch = new_pitches
-                        transposed.append(event_copy)
+            if event.type == 'note' and isinstance(event.pitch, int):
+                new_pitch = event.pitch + semitones
+                if 21 <= new_pitch <= 108:  # Piano range
+                    event_copy.pitch = new_pitch
+                    transposed.append(event_copy)
+            elif event.type == 'chord' and isinstance(event.pitch, list):
+                new_pitches = [p + semitones for p in event.pitch]
+                if all(21 <= p <= 108 for p in new_pitches):  # All in piano range
+                    event_copy.pitch = new_pitches
+                    transposed.append(event_copy)
             else:
                 transposed.append(event_copy)
         
-        return transposed
+        return transposed if len(transposed) >= len(events) * 0.8 else []  # Keep if 80% notes preserved
 
     def _vary_tempo(
         self,
         events: List[MusicEvent],
         tempo_factor: float
     ) -> List[MusicEvent]:
-        """Vary the tempo of a sequence"""
+        """Vary tempo while preserving musical structure"""
         scaled = []
-        current_time = 0.0
+        time_scale = 1.0 / tempo_factor
         
         for event in events:
             event_copy = MusicEvent(
                 type=event.type,
-                time=current_time,
-                duration=event.duration / tempo_factor if event.duration else None,
+                time=event.time * time_scale,
+                duration=event.duration * time_scale if event.duration else None,
                 pitch=event.pitch,
                 velocity=event.velocity,
                 tempo=event.tempo * tempo_factor if event.tempo else None,
@@ -423,36 +594,60 @@ class DataProcessor:
                 denominator=event.denominator,
                 key=event.key
             )
-            
             scaled.append(event_copy)
-            if event.duration:
-                current_time += event.duration / tempo_factor
         
         return scaled
+    
+    def _vary_dynamics(
+        self,
+        events: List[MusicEvent],
+        velocity_factor: float
+    ) -> List[MusicEvent]:
+        """Vary dynamics (velocity) of notes"""
+        varied = []
+        
+        for event in events:
+            event_copy = MusicEvent(
+                type=event.type,
+                time=event.time,
+                duration=event.duration,
+                pitch=event.pitch,
+                velocity=None,
+                tempo=event.tempo,
+                numerator=event.numerator,
+                denominator=event.denominator,
+                key=event.key
+            )
+            
+            if event.velocity is not None:
+                new_velocity = int(event.velocity * velocity_factor)
+                event_copy.velocity = max(20, min(127, new_velocity))
+            else:
+                event_copy.velocity = event.velocity
+            
+            varied.append(event_copy)
+        
+        return varied
 
     def save_processor(self, path: Union[str, Path]):
-        """Save the data processor state"""
+        """Save processor state"""
         save_path = Path(path)
         save_path.mkdir(parents=True, exist_ok=True)
         
-        # Save tokenizer vocabulary
         self.tokenizer.save_vocabulary(save_path / 'vocabulary.json')
         
-        # Save config
         with open(save_path / 'config.json', 'w') as f:
             json.dump(self.config.__dict__, f, indent=2)
 
     @classmethod
     def load_processor(cls, path: Union[str, Path]) -> 'DataProcessor':
-        """Load a saved data processor"""
+        """Load saved processor"""
         load_path = Path(path)
         
-        # Load config
         with open(load_path / 'config.json', 'r') as f:
             config_dict = json.load(f)
         config = DataConfig(**config_dict)
         
-        # Create processor and load tokenizer
         processor = cls(config)
         processor.tokenizer = EventTokenizer.load_vocabulary(
             load_path / 'vocabulary.json',

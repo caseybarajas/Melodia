@@ -134,15 +134,32 @@ class MIDIProcessor:
                 # Note on
                 messages.append((
                     event.time,
-                    mido.Message('note_on', note=event.pitch,
-                               velocity=event.velocity)
+                    mido.Message('note_on', note=int(event.pitch),
+                               velocity=int(event.velocity or 64))
                 ))
                 # Note off
                 messages.append((
                     event.time + event.duration,
-                    mido.Message('note_off', note=event.pitch,
+                    mido.Message('note_off', note=int(event.pitch),
                                velocity=0)
                 ))
+            
+            elif event.type == 'chord':
+                # Handle chord as multiple notes
+                if isinstance(event.pitch, list):
+                    for pitch in event.pitch:
+                        # Note on
+                        messages.append((
+                            event.time,
+                            mido.Message('note_on', note=int(pitch),
+                                       velocity=int(event.velocity or 64))
+                        ))
+                        # Note off
+                        messages.append((
+                            event.time + event.duration,
+                            mido.Message('note_off', note=int(pitch),
+                                       velocity=0)
+                        ))
             
             elif event.type == 'tempo':
                 tempo = int(60000000 / event.tempo)

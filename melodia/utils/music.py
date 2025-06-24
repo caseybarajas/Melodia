@@ -180,6 +180,76 @@ class Progression:
         
         return patterns
 
+class MusicalAnalyzer:
+    """Advanced musical analysis utilities"""
+    
+    def __init__(self):
+        self.music_theory = MusicTheory()
+        self.voice_leading = VoiceLeading()
+    
+    def analyze_key(self, notes: List[int]) -> str:
+        """Analyze the key of a sequence of notes"""
+        # Count occurrences of each pitch class
+        pitch_classes = [note % 12 for note in notes]
+        counts = {}
+        for pc in pitch_classes:
+            counts[pc] = counts.get(pc, 0) + 1
+        
+        # Find the most likely key
+        best_key = None
+        best_score = -1
+        
+        for root in range(12):
+            for scale_type in [Scale.MAJOR, Scale.NATURAL_MINOR]:
+                scale_notes = set(self.music_theory.get_scale(root, scale_type))
+                score = sum(counts.get(note, 0) for note in scale_notes)
+                
+                if score > best_score:
+                    best_score = score
+                    mode = "major" if scale_type == Scale.MAJOR else "minor"
+                    best_key = f"{MusicTheory.NOTES[root]} {mode}"
+        
+        return best_key or "C major"
+    
+    def analyze_chord_progression(self, chords: List[List[int]]) -> Dict:
+        """Analyze a chord progression"""
+        return {
+            'patterns': Progression.analyze_progression(chords),
+            'key': self.analyze_key([note for chord in chords for note in chord]),
+            'modulations': self._detect_modulations(chords)
+        }
+    
+    def _detect_modulations(self, chords: List[List[int]]) -> List[str]:
+        """Detect key changes in a chord progression"""
+        # Simple modulation detection
+        modulations = []
+        window_size = 4
+        
+        for i in range(len(chords) - window_size + 1):
+            window = chords[i:i + window_size]
+            key = self.analyze_key([note for chord in window for note in chord])
+            if i == 0:
+                current_key = key
+            elif key != current_key:
+                modulations.append(f"Modulation to {key} at chord {i}")
+                current_key = key
+        
+        return modulations
+    
+    def calculate_harmonic_tension(self, chord: List[int]) -> float:
+        """Calculate harmonic tension of a chord"""
+        if len(chord) < 2:
+            return 0.0
+        
+        tension = 0.0
+        for i in range(len(chord)):
+            for j in range(i + 1, len(chord)):
+                interval = abs(chord[j] - chord[i]) % 12
+                if not MusicTheory.is_consonant(interval):
+                    tension += 1.0
+        
+        return tension / (len(chord) * (len(chord) - 1) / 2)
+
 class VoiceLeading:
     """Voice leading utilities"""
     
