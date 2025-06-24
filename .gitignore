@@ -157,6 +157,7 @@ models/checkpoints/
 models/logs
 old/
 /models/checkpoints
+/models/
 
 
 
